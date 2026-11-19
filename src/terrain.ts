@@ -1,12 +1,20 @@
+import { BuildingStore } from "./buildings.ts";
+import type { Building, BuildingKind, WallImpact } from "./buildings.ts";
 import { MINING_CONFIG } from "./mining-config.ts";
 import { TEST_MAP_LAYOUT } from "./test-map.ts";
 
 export const MAP_COLUMNS = 24;
 export const MAP_ROWS = 32;
+export const CHUNK_ROWS = MAP_ROWS;
 
 export interface GridPosition {
   readonly col: number;
   readonly row: number;
+}
+
+export interface ChunkId {
+  readonly chunkCol: number;
+  readonly chunkRow: number;
 }
 
 export type TerrainType = "empty" | "dirt" | "rock";
@@ -25,7 +33,7 @@ export type TerrainCell = TerrainCellFields & (
 export interface TerrainReader {
   readonly columns: number;
   readonly rows: number;
-  /** Changes when a tile becomes walkable or the map resets. */
+  /** Changes when map walkability changes or the map resets. */
   readonly revision: number;
   isInside(position: GridPosition): boolean;
   getCell(position: GridPosition): TerrainCell | undefined;
@@ -63,21 +71,48 @@ const MARKER_CELLS = new Map<string, TerrainCell>([
   ["#", ROCK],
 ]);
 
-const spawnRow = TEST_MAP_LAYOUT.findIndex((row) => row.includes("S"));
-const SPAWN = Object.freeze({ col: TEST_MAP_LAYOUT[spawnRow]?.indexOf("S") ?? -1, row: spawnRow });
-const INITIAL_TERRAIN = TEST_MAP_LAYOUT.map((row) => Array.from(row, (marker) => {
-  const cell = MARKER_CELLS.get(marker);
-  if (!cell) throw new Error(`Invalid test map marker: ${marker}`);
-  return cell;
-}));
+type TerrainChunk = TerrainCell[][];
+
+function chunkRowFor(row: number): number {
+  return Math.floor(row / CHUNK_ROWS);
+}
 
 export class TerrainMap implements TerrainReader {
   readonly columns = MAP_COLUMNS;
-  readonly rows = MAP_ROWS;
-  readonly spawn = SPAWN;
+  readonly rows: number;
+  readonly spawn: GridPosition;
 
-  #cells = INITIAL_TERRAIN.map((row) => row.slice());
+  readonly #layout: readonly string[];
+  readonly #initialChunks: readonly TerrainChunk[];
+  readonly #buildings = new BuildingStore(MAP_COLUMNS);
+  #chunks: TerrainChunk[];
   #revision = 0;
+
+  constructor(layout: readonly string[] = TEST_MAP_LAYOUT) {
+    this.#layout = [...layout];
+    this.rows = this.#layout.length;
+    if (this.rows === 0 || this.rows % CHUNK_ROWS !== 0 || this.#layout.some((row) => row.length !== this.columns)) {
+      throw new RangeError(`Terrain layout must have ${this.columns} columns and complete ${CHUNK_ROWS}-row chunks`);
+    }
+    const spawnRow = this.#layout.findIndex((row) => row.includes("S"));
+    const spawnCol = this.#layout[spawnRow]?.indexOf("S") ?? -1;
+    if (spawnRow < 0
+      || this.#layout[spawnRow].includes("S", spawnCol + 1)
+      || this.#layout.slice(spawnRow + 1).some((row) => row.includes("S"))) {
+      throw new Error("Terrain layout must contain exactly one spawn");
+    }
+    this.spawn = Object.freeze({ col: spawnCol, row: spawnRow });
+
+    this.#initialChunks = Array.from({ length: this.rows / CHUNK_ROWS }, (_, chunkRow) => {
+      const firstRow = chunkRow * CHUNK_ROWS;
+      return this.#layout.slice(firstRow, firstRow + CHUNK_ROWS).map((row) => Array.from(row, (marker) => {
+        const cell = MARKER_CELLS.get(marker);
+        if (!cell) throw new Error(`Invalid test map marker: ${marker}`);
+        return cell;
+      }));
+    });
+    this.#chunks = this.copyInitialChunks();
+  }
 
   get revision(): number {
     return this.#revision;
@@ -88,12 +123,32 @@ export class TerrainMap implements TerrainReader {
       && col >= 0 && col < this.columns && row >= 0 && row < this.rows;
   }
 
+  worldToChunk(position: GridPosition): { readonly chunk: ChunkId; readonly local: GridPosition } | undefined {
+    if (!this.isInside(position)) return undefined;
+    return {
+      chunk: { chunkCol: 0, chunkRow: chunkRowFor(position.row) },
+      local: { col: position.col, row: position.row % CHUNK_ROWS },
+    };
+  }
+
+  chunkToWorld({ chunkCol, chunkRow }: ChunkId, { col, row }: GridPosition): GridPosition | undefined {
+    if (chunkCol !== 0 || !Number.isInteger(chunkRow) || !Number.isInteger(row) || row < 0 || row >= CHUNK_ROWS) {
+      return undefined;
+    }
+    const position = { col, row: chunkRow * CHUNK_ROWS + row };
+    return this.isInside(position) ? position : undefined;
+  }
+
   getCell(position: GridPosition): TerrainCell | undefined {
-    return this.isInside(position) ? this.#cells[position.row][position.col] : undefined;
+    if (!this.isInside(position)) return undefined;
+    const cell = this.cellRow(position.row)[position.col];
+    const building = this.#buildings.get(position);
+    return building ? Object.freeze({ ...cell, buildingId: building.id }) : cell;
   }
 
   isWalkable(position: GridPosition): boolean {
-    return this.getCell(position)?.terrain === "empty";
+    const cell = this.getCell(position);
+    return cell?.terrain === "empty" && cell.buildingId === null;
   }
 
   getWalkableNeighbors({ col, row }: GridPosition): GridPosition[] {
@@ -107,8 +162,37 @@ export class TerrainMap implements TerrainReader {
     ].filter((neighbor) => this.isWalkable(neighbor));
   }
 
-  isGoal({ col, row }: GridPosition): boolean {
-    return TEST_MAP_LAYOUT[row]?.[col] === "G";
+  isGoal(position: GridPosition): boolean {
+    return this.isInside(position) && this.#layout[position.row][position.col] === "G";
+  }
+
+  getBuilding(position: GridPosition): Building | undefined {
+    return this.isInside(position) ? this.#buildings.get(position) : undefined;
+  }
+
+  getBuildings(): Iterable<Building> {
+    return this.#buildings.values();
+  }
+
+  placeBuilding(kind: BuildingKind, position: GridPosition, hp = 50): Building | undefined {
+    if (!this.isInside(position) || this.cellRow(position.row)[position.col].terrain !== "empty") return undefined;
+    const building = this.#buildings.place(kind, position, hp);
+    if (building) this.#revision += 1;
+    return building;
+  }
+
+  removeBuilding(position: GridPosition, expectedId?: string): Building | undefined {
+    if (!this.isInside(position)) return undefined;
+    const building = this.#buildings.remove(position, expectedId);
+    if (building) this.#revision += 1;
+    return building;
+  }
+
+  impactWall(position: GridPosition, wallId: string, damage: number): WallImpact | undefined {
+    if (!this.isInside(position)) return undefined;
+    const impact = this.#buildings.impactWall(position, wallId, damage);
+    if (impact?.destroyed) this.#revision += 1;
+    return impact;
   }
 
   getDigFailure(from: GridPosition, target: GridPosition): DigFailure | undefined {
@@ -128,7 +212,7 @@ export class TerrainMap implements TerrainReader {
     }
 
     const cleared = hp === 0;
-    this.#cells[target.row][target.col] = cleared ? EMPTY : Object.freeze({ ...cell, hp });
+    this.cellRow(target.row)[target.col] = cleared ? EMPTY : Object.freeze({ ...cell, hp });
     if (cleared) this.#revision += 1;
     return { effective: true, damage: cell.hp - hp, hp, cleared };
   }
@@ -146,7 +230,16 @@ export class TerrainMap implements TerrainReader {
   }
 
   reset(): void {
-    this.#cells = INITIAL_TERRAIN.map((row) => row.slice());
+    this.#chunks = this.copyInitialChunks();
+    this.#buildings.clear();
     this.#revision += 1;
+  }
+
+  private cellRow(row: number): TerrainCell[] {
+    return this.#chunks[chunkRowFor(row)][row % CHUNK_ROWS];
+  }
+
+  private copyInitialChunks(): TerrainChunk[] {
+    return this.#initialChunks.map((chunk) => chunk.map((row) => row.slice()));
   }
 }

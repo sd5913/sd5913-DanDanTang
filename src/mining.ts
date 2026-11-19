@@ -15,7 +15,6 @@ export interface MiningStrike {
 
 interface ActiveMining {
   readonly target: GridPosition;
-  nextAttackMs: number;
   lastUpdateMs: number;
 }
 
@@ -23,6 +22,7 @@ export class MiningSession {
   private readonly map: Pick<TerrainMap, "getDigFailure" | "applyDigDamage">;
   private readonly tool: MiningTool;
   private active?: ActiveMining;
+  private nextAttackMs = -Infinity;
 
   constructor(map: Pick<TerrainMap, "getDigFailure" | "applyDigDamage">, tool: MiningTool = MINING_CONFIG) {
     if (!Number.isFinite(tool.attackIntervalMs) || tool.attackIntervalMs <= 0) {
@@ -32,12 +32,22 @@ export class MiningSession {
     this.tool = { damage: tool.damage, attackIntervalMs: tool.attackIntervalMs };
   }
 
-  begin(from: GridPosition, { col, row }: GridPosition, nowMs: number): MiningStrike {
+  begin(from: GridPosition, { col, row }: GridPosition, nowMs: number): MiningStrike | undefined {
     const target = Object.freeze({ col, row });
+    this.stop();
+    if (!Number.isFinite(nowMs)) return;
+
+    // A legal press during cooldown locks its target without spending a strike.
+    if (nowMs < this.nextAttackMs && !this.map.getDigFailure(from, target)) {
+      this.active = { target, lastUpdateMs: nowMs };
+      return;
+    }
+
     const result = this.map.applyDigDamage(from, target, this.tool.damage);
-    this.active = result.effective && !result.cleared && Number.isFinite(nowMs)
-      ? { target, nextAttackMs: nowMs + this.tool.attackIntervalMs, lastUpdateMs: nowMs }
-      : undefined;
+    if (result.effective) {
+      this.nextAttackMs = nowMs + this.tool.attackIntervalMs;
+      if (!result.cleared) this.active = { target, lastUpdateMs: nowMs };
+    }
     return { target, result };
   }
 
@@ -54,13 +64,13 @@ export class MiningSession {
 
     let result: DigResult | undefined;
     // Keep the original cadence across short stalls and stop at the clearing strike.
-    while (nowMs >= active.nextAttackMs) {
+    while (nowMs >= this.nextAttackMs) {
       result = this.map.applyDigDamage(from, active.target, this.tool.damage);
+      if (result.effective) this.nextAttackMs += this.tool.attackIntervalMs;
       if (!result.effective || result.cleared) {
         this.stop();
         break;
       }
-      active.nextAttackMs += this.tool.attackIntervalMs;
     }
 
     if (result) return { target: active.target, result };
@@ -68,5 +78,10 @@ export class MiningSession {
 
   stop(): void {
     this.active = undefined;
+  }
+
+  reset(): void {
+    this.stop();
+    this.nextAttackMs = -Infinity;
   }
 }

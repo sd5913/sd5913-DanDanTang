@@ -1,5 +1,5 @@
 import type { MiningStrike } from "./mining.ts";
-import type { DigFailure, GridPosition, TerrainCell, TerrainType } from "./terrain.ts";
+import type { ChunkId, DigFailure, GridPosition, TerrainCell, TerrainType } from "./terrain.ts";
 
 const TERRAIN_NAMES: Record<TerrainType, string> = {
   empty: "空地",
@@ -32,13 +32,24 @@ function writeStatus(field: HTMLElement, value: string): void {
 
 export class DebugHud {
   private readonly player = statusField("player-cell");
+  private readonly chunk = statusField("chunk-status");
+  private readonly viewport = statusField("visible-chunks");
   private readonly hover = statusField("hover-cell");
   private readonly grid = statusField("grid-status");
   private readonly dig = statusField("dig-result");
   private readonly goal = statusField("goal-status");
 
-  showPlayer(cell: GridPosition): void {
+  showPlayer(cell: GridPosition, chunk?: ChunkId): void {
     writeStatus(this.player, coordinates(cell));
+    writeStatus(this.chunk, chunk ? `(${chunk.chunkCol}, ${chunk.chunkRow})` : "—");
+  }
+
+  showViewport(chunkRows: readonly number[], worldTop: number): void {
+    writeStatus(this.viewport, chunkRows.map((row) => `(0, ${row})`).join(" "));
+    const count = String(chunkRows.length);
+    const top = String(worldTop);
+    if (this.viewport.dataset.count !== count) this.viewport.dataset.count = count;
+    if (this.viewport.dataset.worldTop !== top) this.viewport.dataset.worldTop = top;
   }
 
   showHover(cell: GridPosition | null, state?: TerrainCell): void {

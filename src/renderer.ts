@@ -1,56 +1,144 @@
 import type Phaser from "phaser";
 import { PLAYER_HALF_SIZE, TILE_SIZE } from "./player.ts";
 import type { Point } from "./player.ts";
+import { CHUNK_ROWS } from "./terrain.ts";
 import type { GridPosition, TerrainCell, TerrainMap, TerrainType } from "./terrain.ts";
 
+const CHUNK_HEIGHT = CHUNK_ROWS * TILE_SIZE;
+
+interface ChunkSlot {
+  readonly texture: Phaser.Textures.CanvasTexture;
+  readonly image: Phaser.GameObjects.Image;
+  readonly grid: Phaser.GameObjects.Graphics;
+}
+
 export class GridRenderer {
-  private readonly texture: Phaser.Textures.CanvasTexture;
-  private readonly grid: Phaser.GameObjects.Graphics;
+  readonly followTarget: Phaser.GameObjects.Container;
+  private readonly scene: Phaser.Scene;
+  private readonly terrainLayer: Phaser.GameObjects.Layer;
+  private readonly gridLayer: Phaser.GameObjects.Layer;
   private readonly cursor: Phaser.GameObjects.Rectangle;
-  private readonly player: Phaser.GameObjects.Container;
+  private readonly resident = new Map<number, ChunkSlot>();
+  private readonly spare: ChunkSlot[] = [];
+  private visibleRows: readonly number[] = [];
+  private firstVisible = -1;
+  private endVisible = -1;
 
   constructor(scene: Phaser.Scene, map: TerrainMap) {
-    const width = map.columns * TILE_SIZE;
-    const height = map.rows * TILE_SIZE;
-    const texture = scene.textures.createCanvas("terrain", width, height);
-    if (!texture) throw new Error("Could not create the terrain canvas");
-    this.texture = texture;
-    scene.add.image(0, 0, texture.key).setOrigin(0);
-    this.redraw(map);
-
-    this.grid = scene.add.graphics().lineStyle(1, 0xcbd6d6, 0.32);
-    for (let x = TILE_SIZE; x < width; x += TILE_SIZE) this.grid.lineBetween(x + 0.5, 0, x + 0.5, height);
-    for (let y = TILE_SIZE; y < height; y += TILE_SIZE) this.grid.lineBetween(0, y + 0.5, width, y + 0.5);
+    this.scene = scene;
+    // Fixed layers preserve draw order when the camera loads a chunk during pre-render.
+    this.terrainLayer = scene.add.layer().setDepth(0);
+    this.gridLayer = scene.add.layer().setDepth(1);
 
     this.cursor = scene.add.rectangle(0, 0, TILE_SIZE - 2, TILE_SIZE - 2, 0xffffff, 0.09)
       .setOrigin(0)
       .setStrokeStyle(1, 0xf1f5e4)
+      .setDepth(2)
       .setVisible(false);
 
     const playerSize = PLAYER_HALF_SIZE * 2;
     const border = scene.add.rectangle(0, 0, playerSize, playerSize, 0x102f31);
     const body = scene.add.rectangle(0, 0, playerSize - 2, playerSize - 2, 0xcefff0);
-    this.player = scene.add.container(0, 0, [border, body]);
+    this.followTarget = scene.add.container(0, 0, [border, body]).setDepth(3);
+
+    const worldHeight = map.rows * TILE_SIZE;
+    const spawnY = (map.spawn.row + 0.5) * TILE_SIZE;
+    const top = Math.max(0, Math.min(spawnY - CHUNK_HEIGHT / 2, worldHeight - CHUNK_HEIGHT));
+    this.syncViewport(map, top, top + CHUNK_HEIGHT);
+
+    scene.events.once("shutdown", () => {
+      for (const slot of this.resident.values()) scene.textures.remove(slot.texture.key);
+      for (const slot of this.spare) scene.textures.remove(slot.texture.key);
+    });
+  }
+
+  syncViewport(map: TerrainMap, worldTop: number, worldBottom: number): readonly number[] {
+    const first = Math.max(0, Math.floor(worldTop / CHUNK_HEIGHT));
+    const end = Math.min(Math.ceil(map.rows / CHUNK_ROWS), Math.ceil(worldBottom / CHUNK_HEIGHT));
+    if (first === this.firstVisible && end === this.endVisible) return this.visibleRows;
+
+    for (const [row, slot] of this.resident) {
+      if (row >= first && row < end) continue;
+      slot.image.setVisible(false);
+      slot.grid.setVisible(false);
+      this.resident.delete(row);
+      this.spare.push(slot);
+    }
+
+    const width = map.columns * TILE_SIZE;
+    const visibleRows = [];
+    for (let row = first; row < end; row += 1) {
+      visibleRows.push(row);
+      if (this.resident.has(row)) continue;
+
+      const slot = this.spare.pop() ?? this.createSlot(width);
+      slot.image.setY(row * CHUNK_HEIGHT).setVisible(true);
+      slot.grid.setY(row * CHUNK_HEIGHT).setVisible(true);
+      this.resident.set(row, slot);
+      this.paintChunk(slot, map, row);
+      this.paintGrid(slot.grid, map, row);
+    }
+
+    this.firstVisible = first;
+    this.endVisible = end;
+    this.visibleRows = visibleRows;
+    return visibleRows;
   }
 
   redraw(map: TerrainMap): void {
-    for (let row = 0; row < map.rows; row += 1) {
-      for (let col = 0; col < map.columns; col += 1) this.paintCell(map, { col, row });
-    }
-    this.texture.refresh();
+    for (const [row, slot] of this.resident) this.paintChunk(slot, map, row);
   }
 
   redrawCell(map: TerrainMap, position: GridPosition): void {
-    this.paintCell(map, position);
-    this.texture.refresh();
+    const chunkRow = Math.floor(position.row / CHUNK_ROWS);
+    const slot = this.resident.get(chunkRow);
+    if (!slot) return;
+    this.paintCell(slot.texture.getContext(), map, position, chunkRow);
+    slot.texture.refresh();
   }
 
-  private paintCell(map: TerrainMap, cell: GridPosition): void {
+  private createSlot(width: number): ChunkSlot {
+    const { scene } = this;
+    const index = this.resident.size + this.spare.length;
+    const key = `terrain-${scene.sys.settings.key}-${index}`;
+    const texture = scene.textures.createCanvas(key, width, CHUNK_HEIGHT);
+    if (!texture) throw new Error("Could not create a terrain chunk canvas");
+
+    const image = scene.add.image(0, 0, key).setOrigin(0);
+    const grid = scene.add.graphics();
+    this.terrainLayer.add(image);
+    this.gridLayer.add(grid);
+    return { texture, image, grid };
+  }
+
+  private paintChunk(slot: ChunkSlot, map: TerrainMap, chunkRow: number): void {
+    const context = slot.texture.getContext();
+    const firstRow = chunkRow * CHUNK_ROWS;
+    const endRow = Math.min(firstRow + CHUNK_ROWS, map.rows);
+    // A reused slot can have fewer than CHUNK_ROWS tiles at the end of the map.
+    if (endRow - firstRow < CHUNK_ROWS) context.clearRect(0, 0, slot.texture.width, CHUNK_HEIGHT);
+    for (let row = firstRow; row < endRow; row += 1) {
+      for (let col = 0; col < map.columns; col += 1) this.paintCell(context, map, { col, row }, chunkRow);
+    }
+    slot.texture.refresh();
+  }
+
+  private paintGrid(grid: Phaser.GameObjects.Graphics, map: TerrainMap, chunkRow: number): void {
+    const width = map.columns * TILE_SIZE;
+    const height = Math.min(CHUNK_ROWS, map.rows - chunkRow * CHUNK_ROWS) * TILE_SIZE;
+    grid.clear().lineStyle(1, 0xcbd6d6, 0.32);
+    for (let x = TILE_SIZE; x < width; x += TILE_SIZE) grid.lineBetween(x + 0.5, 0, x + 0.5, height);
+    // Each shared boundary belongs to the chunk just below it.
+    for (let y = chunkRow === 0 ? TILE_SIZE : 0; y < height; y += TILE_SIZE) {
+      grid.lineBetween(0, y + 0.5, width, y + 0.5);
+    }
+  }
+
+  private paintCell(context: CanvasRenderingContext2D, map: TerrainMap, cell: GridPosition, chunkRow: number): void {
     const state = map.getCell(cell);
     if (!state) return;
     const x = cell.col * TILE_SIZE;
-    const y = cell.row * TILE_SIZE;
-    const context = this.texture.getContext();
+    const y = (cell.row - chunkRow * CHUNK_ROWS) * TILE_SIZE;
     const variant = (cell.col * 5 + cell.row * 3) % 4;
     if (map.isGoal(cell)) {
       paintGoal(context, map, cell, x, y);
@@ -60,7 +148,7 @@ export class GridRenderer {
   }
 
   movePlayer({ x, y }: Point): void {
-    this.player.setPosition(x, y);
+    this.followTarget.setPosition(x, y);
   }
 
   showHover(cell: GridPosition | null): void {
@@ -69,7 +157,7 @@ export class GridRenderer {
   }
 
   showGrid(visible: boolean): void {
-    this.grid.setVisible(visible);
+    this.gridLayer.setVisible(visible);
   }
 }
 

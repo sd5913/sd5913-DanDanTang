@@ -130,6 +130,30 @@ kbd {
 .swatch.rock { background: #4c5b67; }
 .swatch.target { background: #3e8474; }
 
+.defense-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem 0.5rem;
+  margin-block: 0.5rem;
+}
+
+.defense-controls :is(select, button) {
+  border: 1px solid #576c76;
+  border-radius: 0.25rem;
+  padding: 0.2rem 0.35rem;
+  color: inherit;
+  background: #233138;
+  font: inherit;
+}
+
+.defense-controls button { color: var(--mint); cursor: pointer; }
+.contact-test { display: flex; align-items: center; gap: 0.35rem; }
+#defense-hover, #defense-stats, #defense-combat-stats {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
 @media (max-width: 640px) {
   .workbench { width: min(100%, 32rem); }
   .layout { grid-template-columns: minmax(0, 1fr); }

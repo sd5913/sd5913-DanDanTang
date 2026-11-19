@@ -1,22 +1,34 @@
 import Phaser from "phaser";
+import { DefenseDebug } from "./defense-debug.ts";
 import { DebugHud } from "./hud.ts";
 import { MiningSession } from "./mining.ts";
 import type { MiningStrike } from "./mining.ts";
-import { Player, worldToCell } from "./player.ts";
+import { Player, TILE_SIZE, worldToCell } from "./player.ts";
 import { GridRenderer } from "./renderer.ts";
 import { TerrainMap } from "./terrain.ts";
 import type { GridPosition } from "./terrain.ts";
 
 export class GridScene extends Phaser.Scene {
-  private readonly terrain = new TerrainMap();
-  private readonly player = new Player(this.terrain.spawn);
-  private readonly mining = new MiningSession(this.terrain);
+  private readonly terrain: TerrainMap;
+  private readonly player: Player;
+  private readonly mining: MiningSession;
+  private readonly defenseEnabled: boolean;
+  private defense?: DefenseDebug;
   private boardRenderer!: GridRenderer;
   private hud!: DebugHud;
   private keys!: Record<"W" | "A" | "S" | "D" | "R" | "G", Phaser.Input.Keyboard.Key>;
   private hovered: GridPosition | null = null;
   private gridVisible = true;
   private reachedGoal = false;
+  private lastViewTop = Number.NaN;
+
+  constructor(layout?: readonly string[], defenseEnabled = false) {
+    super("grid");
+    this.terrain = new TerrainMap(layout);
+    this.player = new Player(this.terrain.spawn);
+    this.mining = new MiningSession(this.terrain);
+    this.defenseEnabled = defenseEnabled;
+  }
 
   create(): void {
     this.boardRenderer = new GridRenderer(this, this.terrain);
@@ -24,6 +36,7 @@ export class GridScene extends Phaser.Scene {
     const keyboard = this.input.keyboard;
     if (!keyboard) throw new Error("Keyboard input is unavailable");
     this.keys = keyboard.addKeys("W,A,S,D,R,G", false) as typeof this.keys;
+    if (this.defenseEnabled) this.defense = new DefenseDebug(this, this.terrain, this.player);
     this.input.on(Phaser.Input.Events.POINTER_MOVE, this.inspectPointer, this);
     this.input.on(Phaser.Input.Events.POINTER_DOWN, this.beginMining, this);
     this.input.on(Phaser.Input.Events.POINTER_UP, this.releasePointer, this);
@@ -33,6 +46,11 @@ export class GridScene extends Phaser.Scene {
     this.game.events.on(Phaser.Core.Events.PAUSE, this.stopMining, this);
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, this.shutdownMining, this);
     this.updatePlayer();
+
+    const camera = this.cameras.main;
+    camera.setBounds(0, 0, this.terrain.columns * TILE_SIZE, this.terrain.rows * TILE_SIZE);
+    camera.on(Phaser.Cameras.Scene2D.Events.FOLLOW_UPDATE, this.syncViewport, this);
+    camera.startFollow(this.boardRenderer.followTarget, true, 1, 1);
   }
 
   update(_time: number, delta: number): void {
@@ -53,6 +71,7 @@ export class GridScene extends Phaser.Scene {
       this.player.move(horizontal, vertical, delta, this.terrain);
       this.updatePlayer();
     }
+    this.defense?.update(delta, this.hovered);
 
     if (!this.input.mousePointer.leftButtonDown() || !this.input.isOver || document.hidden || !document.hasFocus()) {
       this.stopMining();
@@ -64,8 +83,25 @@ export class GridScene extends Phaser.Scene {
   }
 
   private inspectPointer(pointer: Phaser.Input.Pointer): void {
-    const cell = worldToCell(pointer.x, pointer.y);
+    const cell = this.pointerCell(pointer);
     this.updateHover(this.terrain.isInside(cell) ? cell : null);
+  }
+
+  private pointerCell(pointer: Phaser.Input.Pointer): GridPosition {
+    const point = this.cameras.main.getWorldPoint(pointer.x, pointer.y);
+    return worldToCell(point.x, point.y);
+  }
+
+  private syncViewport(): void {
+    const view = this.cameras.main.worldView;
+    const { top, bottom } = view;
+    const chunks = this.boardRenderer.syncViewport(this.terrain, top, bottom);
+    this.hud.showViewport(chunks, top);
+    if (top !== this.lastViewTop) {
+      this.lastViewTop = top;
+      if (this.hovered) this.inspectPointer(this.input.mousePointer);
+    }
+    this.defense?.render(view, this.hovered);
   }
 
   private updateHover(cell: GridPosition | null): void {
@@ -76,8 +112,9 @@ export class GridScene extends Phaser.Scene {
 
   private beginMining(pointer: Phaser.Input.Pointer): void {
     if (pointer.button !== 0 || !pointer.leftButtonDown() || document.hidden || !document.hasFocus() || this.game.isPaused) return;
-    const target = worldToCell(pointer.x, pointer.y);
-    this.showStrike(this.mining.begin(this.player.cell, target, performance.now()));
+    const target = this.pointerCell(pointer);
+    const strike = this.mining.begin(this.player.cell, target, performance.now());
+    if (strike) this.showStrike(strike);
     this.inspectPointer(pointer);
   }
 
@@ -114,7 +151,7 @@ export class GridScene extends Phaser.Scene {
   private updatePlayer(): void {
     const cell = this.player.cell;
     this.boardRenderer.movePlayer(this.player.position);
-    this.hud.showPlayer(cell);
+    this.hud.showPlayer(cell, this.terrain.worldToChunk(cell)?.chunk);
     if (!this.reachedGoal && this.terrain.isGoal(cell)) {
       this.reachedGoal = true;
       this.hud.showGoal(true);
@@ -122,9 +159,10 @@ export class GridScene extends Phaser.Scene {
   }
 
   private reset(): void {
-    this.stopMining();
+    this.mining.reset();
     this.terrain.reset();
     this.player.reset(this.terrain.spawn);
+    this.defense?.reset();
     this.reachedGoal = false;
     this.boardRenderer.redraw(this.terrain);
     this.updatePlayer();

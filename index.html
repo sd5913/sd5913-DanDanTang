@@ -5,13 +5,13 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="theme-color" content="#10161b" />
     <link rel="icon" href="data:," />
-    <title>P0-A.1 · 格子地形与持续挖掘</title>
+    <title>格子地形与持续挖掘</title>
   </head>
   <body>
     <main class="workbench">
       <header class="page-heading">
         <h1>格子地形与持续挖掘</h1>
-        <p>P0-A.1 <span aria-hidden="true">/</span> 24 × 32</p>
+        <p id="map-size"></p>
       </header>
 
       <div class="layout">
@@ -27,6 +27,8 @@
             <h2 id="readout-title">调试</h2>
             <dl>
               <div><dt>玩家格</dt><dd id="player-cell">—</dd></div>
+              <div><dt>玩家段</dt><dd id="chunk-status">—</dd></div>
+              <div><dt>绘制段</dt><dd id="visible-chunks">—</dd></div>
               <div><dt>指向格</dt><dd id="hover-cell">—</dd></div>
               <div><dt>网格</dt><dd id="grid-status">显示</dd></div>
             </dl>
@@ -41,6 +43,25 @@
               <div><dt><kbd>R</kbd></dt><dd>重置地图</dd></div>
               <div><dt><kbd>G</kbd></dt><dd>切换网格</dd></div>
             </dl>
+          </section>
+
+          <section id="defense-panel" aria-labelledby="defense-title" hidden>
+            <h2 id="defense-title">P0-B 防御灰盒</h2>
+            <p><kbd>B</kbd> 城墙 <kbd>T</kbd> 测试塔 <kbd>X</kbd> 拆除</p>
+            <div class="defense-controls">
+              <label>数量 <select id="spawn-count">
+                <option>1</option><option>4</option><option>10</option><option>50</option><option>100</option><option>250</option>
+              </select></label>
+              <label>撞墙伤害 <select id="spawn-damage">
+                <option>1</option><option>2</option><option>5</option>
+              </select></label>
+              <button id="spawn-enemies" type="button">南端生成</button>
+            </div>
+            <label class="contact-test"><input id="test-player-target" type="checkbox" /> 玩家接触测试</label>
+            <p id="defense-hover">—</p>
+            <p id="defense-stats"></p>
+            <p id="defense-combat-stats"></p>
+            <p id="defense-feedback" class="dig-result">等待布防或生成敌人</p>
           </section>
 
           <ul class="legend" aria-label="地图图例">
