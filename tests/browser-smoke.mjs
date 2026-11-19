@@ -6,6 +6,7 @@ import { MINING_CONFIG } from '../src/mining-config.ts';
 import { TerrainMap } from '../src/terrain.ts';
 import { runDenseMapSmoke } from './browser-dense-map.mjs';
 import { runDefenseSmoke } from './browser-defense.mjs';
+import { runFix02MapSmoke, runFix02DefenseSmoke } from './browser-fix02.mjs';
 import { runLongMapSmoke } from './browser-long-map.mjs';
 
 const host = '127.0.0.1';
@@ -35,11 +36,20 @@ try {
     console.log(`Edge smoke (${mode}, long map regression): passed; scaled camera input, two seams, offscreen HP and cleared terrain, viewport chunk counts, north goal, and reset across all three chunks verified; no browser errors.`);
 
     const denseDigs = await withSmokePage(browser, { width: 1040, height: 840 },
-      (page) => runDenseMapSmoke(page, url));
-    console.log(`Edge smoke (${mode}, dense default): passed; partial damage remained solid, ${denseDigs} dirt tiles cleared along the route to the first seam, actual terrain drawing and reset verified; no browser errors.`);
+      (page) => runDenseMapSmoke(page, `${url}/?map=fix01`));
+    console.log(`Edge smoke (${mode}, FIX01 dense map): passed; partial damage remained solid, ${denseDigs} dirt tiles cleared along the route to the first seam, actual terrain drawing and reset verified; no browser errors.`);
 
-    await withSmokePage(browser, { width: 1440, height: 1060 }, (page) => runDefenseSmoke(page, `${url}/?mode=defense`));
-    console.log(`Edge smoke (${mode}, defense): passed; queued 1/10/50/100 spawn counts, separated enemy drawings, blocked queue retry/reset, no-path recovery, alternate route, wall impacts and breach survivor, tower kill, and offscreen seam crossing verified; no browser errors.`);
+    await withSmokePage(browser, { width: 1440, height: 1060 },
+      (page) => runDefenseSmoke(page, `${url}/?mode=defense&map=fix01`));
+    console.log(`Edge smoke (${mode}, FIX01 defense): passed; queued 1/10/50/100 spawn counts, separated enemy drawings, blocked queue retry/reset, no-path recovery, alternate route, wall impacts and breach survivor, tower kill, and offscreen seam crossing verified; no browser errors.`);
+
+    await withSmokePage(browser, { width: 1280, height: 840 },
+      (page) => runFix02MapSmoke(page, `${url}/?seed=12`));
+    console.log(`Edge smoke (${mode}, FIX02 map): passed; 18-column responsive camera, zoomed input and target lock, four camera bounds, two seams, north goal, and terrain persistence verified; no browser errors.`);
+
+    await withSmokePage(browser, { width: 1280, height: 900 },
+      (page) => runFix02DefenseSmoke(page, `${url}/?mode=defense&seed=12`));
+    console.log(`Edge smoke (${mode}, FIX02 defense): passed; enemy and tower graphics aligned under horizontal scrolling and resize, tower shot and kill verified; no browser errors.`);
   } finally {
     await browser.close();
   }

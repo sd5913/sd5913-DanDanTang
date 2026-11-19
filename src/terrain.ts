@@ -78,22 +78,24 @@ function chunkRowFor(row: number): number {
 }
 
 export class TerrainMap implements TerrainReader {
-  readonly columns = MAP_COLUMNS;
+  readonly columns: number;
   readonly rows: number;
   readonly spawn: GridPosition;
 
   readonly #layout: readonly string[];
   readonly #initialChunks: readonly TerrainChunk[];
-  readonly #buildings = new BuildingStore(MAP_COLUMNS);
+  readonly #buildings: BuildingStore;
   #chunks: TerrainChunk[];
   #revision = 0;
 
   constructor(layout: readonly string[] = TEST_MAP_LAYOUT) {
     this.#layout = [...layout];
     this.rows = this.#layout.length;
-    if (this.rows === 0 || this.rows % CHUNK_ROWS !== 0 || this.#layout.some((row) => row.length !== this.columns)) {
-      throw new RangeError(`Terrain layout must have ${this.columns} columns and complete ${CHUNK_ROWS}-row chunks`);
+    this.columns = this.#layout[0]?.length ?? 0;
+    if (this.columns === 0 || this.rows % CHUNK_ROWS !== 0 || this.#layout.some((row) => row.length !== this.columns)) {
+      throw new RangeError(`Terrain layout must have a common positive width and complete ${CHUNK_ROWS}-row chunks`);
     }
+    this.#buildings = new BuildingStore(this.columns);
     const spawnRow = this.#layout.findIndex((row) => row.includes("S"));
     const spawnCol = this.#layout[spawnRow]?.indexOf("S") ?? -1;
     if (spawnRow < 0

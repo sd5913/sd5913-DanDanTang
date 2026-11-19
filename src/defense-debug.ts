@@ -1,6 +1,5 @@
 import Phaser from "phaser";
 import type { BuildingKind } from "./buildings.ts";
-import { DEFENSE_TARGET, ENEMY_ENTRY } from "./defense-map.ts";
 import { DefenseSimulation, enemyPosition, sameCell } from "./defense-simulation.ts";
 import type { DefenseEvent } from "./defense-simulation.ts";
 import { cellCenter, PLAYER_HALF_SIZE, TILE_SIZE } from "./player.ts";
@@ -23,9 +22,15 @@ function coordinates({ col, row }: GridPosition): string { return `(${col}, ${ro
 
 type Shot = Extract<DefenseEvent, { type: "towerShot" }>;
 
+interface DefenseScenario {
+  readonly entry: GridPosition;
+  readonly target: GridPosition;
+}
+
 export class DefenseDebug {
   private readonly map: TerrainMap;
   private readonly player: Player;
+  private readonly scenario: DefenseScenario;
   private readonly simulation: DefenseSimulation;
   private readonly graphics: Phaser.GameObjects.Graphics;
   private readonly labelLayer: Phaser.GameObjects.Layer;
@@ -41,10 +46,11 @@ export class DefenseDebug {
   private shots: { readonly event: Shot; readonly expires: number }[] = [];
   private timeMs = 0;
 
-  constructor(scene: Phaser.Scene, map: TerrainMap, player: Player) {
+  constructor(scene: Phaser.Scene, map: TerrainMap, player: Player, scenario: DefenseScenario) {
     this.map = map;
     this.player = player;
-    this.simulation = new DefenseSimulation(map, ENEMY_ENTRY, DEFENSE_TARGET, (event) => this.onEvent(event));
+    this.scenario = scenario;
+    this.simulation = new DefenseSimulation(map, scenario.entry, scenario.target, (event) => this.onEvent(event));
     this.graphics = scene.add.graphics().setDepth(1.5);
     this.labelLayer = scene.add.layer().setDepth(2.5);
     this.keys = scene.input.keyboard!.addKeys("B,T,X", false) as typeof this.keys;
@@ -75,7 +81,8 @@ export class DefenseDebug {
     let labelCount = 0;
     for (const building of this.map.getBuildings()) {
       const { x, y } = cellCenter(building.cell);
-      if (y < view.top - TILE_SIZE / 2 || y > view.bottom + TILE_SIZE / 2) continue;
+      if (x < view.left - TILE_SIZE / 2 || x > view.right + TILE_SIZE / 2
+        || y < view.top - TILE_SIZE / 2 || y > view.bottom + TILE_SIZE / 2) continue;
       if (building.kind === "wall") {
         graphics.fillStyle(0x82563d).fillRect(x - 10, y - 10, 20, 20);
         graphics.lineStyle(1, 0xecc69b).strokeRect(x - 10, y - 10, 20, 20);
@@ -89,9 +96,11 @@ export class DefenseDebug {
     this.shots = this.shots.filter((trace) => trace.expires > this.timeMs);
     for (const { event } of this.shots) {
       const start = cellCenter(event.from);
+      const endX = event.to.x * TILE_SIZE;
       const endY = event.to.y * TILE_SIZE;
-      if (Math.max(start.y, endY) < view.top || Math.min(start.y, endY) > view.bottom) continue;
-      graphics.lineStyle(2, 0x9af5ff).lineBetween(start.x, start.y, event.to.x * TILE_SIZE, endY);
+      if (Math.max(start.x, endX) < view.left || Math.min(start.x, endX) > view.right
+        || Math.max(start.y, endY) < view.top || Math.min(start.y, endY) > view.bottom) continue;
+      graphics.lineStyle(2, 0x9af5ff).lineBetween(start.x, start.y, endX, endY);
     }
 
     let active = 0;
@@ -130,7 +139,7 @@ export class DefenseDebug {
   };
 
   private place(kind: BuildingKind, cell: GridPosition | null): void {
-    if (!cell || sameCell(cell, ENEMY_ENTRY) || sameCell(cell, DEFENSE_TARGET)
+    if (!cell || sameCell(cell, this.scenario.entry) || sameCell(cell, this.scenario.target)
       || this.overlapsPlayer(cell) || this.simulation.occupies(cell)) {
       write(this.status, "请选择未被占用的空地");
       return;

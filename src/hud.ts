@@ -44,12 +44,13 @@ export class DebugHud {
     writeStatus(this.chunk, chunk ? `(${chunk.chunkCol}, ${chunk.chunkRow})` : "—");
   }
 
-  showViewport(chunkRows: readonly number[], worldTop: number): void {
+  showViewport(chunkRows: readonly number[], view: Pick<DOMRectReadOnly, "left" | "top" | "width" | "height">): void {
     writeStatus(this.viewport, chunkRows.map((row) => `(0, ${row})`).join(" "));
-    const count = String(chunkRows.length);
-    const top = String(worldTop);
-    if (this.viewport.dataset.count !== count) this.viewport.dataset.count = count;
-    if (this.viewport.dataset.worldTop !== top) this.viewport.dataset.worldTop = top;
+    for (const [field, value] of Object.entries({ count: chunkRows.length, worldLeft: view.left,
+      worldTop: view.top, worldWidth: view.width, worldHeight: view.height })) {
+      const text = String(value);
+      if (this.viewport.dataset[field] !== text) this.viewport.dataset[field] = text;
+    }
   }
 
   showHover(cell: GridPosition | null, state?: TerrainCell): void {

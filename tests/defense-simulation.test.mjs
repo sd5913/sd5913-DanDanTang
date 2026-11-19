@@ -3,6 +3,7 @@ import { performance } from "node:perf_hooks";
 import test from "node:test";
 import { DEFENSE_LAYOUT, DEFENSE_TARGET, ENEMY_ENTRY } from "../src/defense-map.ts";
 import { DEFENSE_CONFIG, DefenseSimulation } from "../src/defense-simulation.ts";
+import { GENERATED_ENEMY_ENTRY, GENERATED_GOAL, generateExpeditionMap } from "../src/generated-map.ts";
 import { MINING_CONFIG } from "../src/mining-config.ts";
 import { TerrainMap } from "../src/terrain.ts";
 
@@ -120,6 +121,42 @@ test("AI-09: the world simulation crosses both seams with no viewport and stays 
   assert.deepEqual(previous, { col: DEFENSE_TARGET.col, row: DEFENSE_TARGET.row + 1 });
   assert.equal(simulation.counters.buildingContacts, 1);
   assert.equal(simulation.searchCount, 1);
+});
+
+test("FIX02: a southern enemy can navigate from beyond column 24 and cross both seams after the route is dug", () => {
+  const map = new TerrainMap(generateExpeditionMap(12));
+  const simulation = new DefenseSimulation(map, GENERATED_ENEMY_ENTRY, GENERATED_GOAL);
+  assert.equal(simulation.spawn(1, 1), 1);
+  simulation.step(DEFENSE_CONFIG.travelMs);
+  const [enemy] = simulation.enemies;
+  assert.deepEqual(enemy.cell, GENERATED_ENEMY_ENTRY);
+  assert.equal(enemy.unreachable, true);
+
+  const route = [{ col: GENERATED_ENEMY_ENTRY.col, row: 93 }, { col: GENERATED_ENEMY_ENTRY.col, row: 92 }];
+  for (let col = GENERATED_ENEMY_ENTRY.col - 1; col >= GENERATED_GOAL.col; col -= 1) route.push({ col, row: 92 });
+  for (let row = 91; row >= GENERATED_GOAL.row; row -= 1) route.push({ col: GENERATED_GOAL.col, row });
+
+  let previous = GENERATED_ENEMY_ENTRY;
+  for (const cell of route) {
+    if (!map.isWalkable(cell)) {
+      assert.equal(map.applyDigDamage(previous, cell, MINING_CONFIG.dirtMaxHp).cleared, true);
+    }
+    previous = cell;
+  }
+
+  const seams = [];
+  previous = enemy.cell;
+  for (let tick = 0; tick <= route.length; tick += 1) {
+    simulation.step(DEFENSE_CONFIG.travelMs);
+    assert.ok(map.isWalkable(enemy.cell));
+    if (map.worldToChunk(enemy.cell).chunk.chunkRow !== map.worldToChunk(previous).chunk.chunkRow) {
+      seams.push([previous.row, enemy.cell.row]);
+    }
+    previous = enemy.cell;
+  }
+  assert.deepEqual(seams, [[64, 63], [32, 31]]);
+  assert.equal(enemy.unreachable, false);
+  assert.equal(simulation.counters.buildingContacts, 1);
 });
 
 test("target and contact events switch to a visible player and emit only once per stable target", () => {
