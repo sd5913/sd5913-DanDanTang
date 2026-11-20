@@ -165,6 +165,7 @@ const TILE_COLORS: Record<TerrainType, readonly string[]> = {
   empty: ["#233238", "#243339", "#25343a", "#243339"],
   dirt: ["#966649", "#9c6c4d", "#926448", "#98694b"],
   rock: ["#43505c", "#485562", "#44515d", "#46535f"],
+  water: ["#235264", "#285a6c", "#25566a", "#23556b"],
 };
 const ADVANCED_DIRT_COLORS = ["#765c6b", "#7d6172", "#79596b", "#806477"];
 
@@ -174,6 +175,12 @@ function paintTerrain(context: CanvasRenderingContext2D, cell: TerrainCell, x: n
   context.fillStyle = colors[variant];
   context.fillRect(x, y, TILE_SIZE, TILE_SIZE);
   if (terrain === "empty") return;
+  if (terrain === "water") {
+    context.fillStyle = "#3a7890";
+    context.fillRect(x + 4 + variant, y + 7, 8, 1);
+    context.fillRect(x + 11 - variant, y + 17, 9, 1);
+    return;
+  }
 
   context.fillStyle = terrain === "dirt" ? "#af805b" : "#566572";
   context.fillRect(x, y, TILE_SIZE, 2);

@@ -19,7 +19,7 @@ export interface ExpeditionWorld {
   readonly layout: readonly string[];
   readonly requestedSeed: number;
   readonly effectiveSeed: number;
-  readonly generatorVersion: typeof EXPEDITION_GENERATOR_VERSION;
+  readonly generatorVersion: number;
   readonly usedFallback: boolean;
 }
 

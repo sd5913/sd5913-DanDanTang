@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { DEFAULT_MAP_SEED, GENERATED_ENEMY_ENTRY, GENERATED_GOAL, GENERATED_SPAWN, generateExpeditionMap } from '../src/generated-map.ts';
-import { MINING_CONFIG } from '../src/mining-config.ts';
+import { MINING_CONFIG, TERRAIN_HP_BY_LEVEL } from '../src/mining-config.ts';
 import { TILE_SIZE } from '../src/player.ts';
 
 const seed = 12;
@@ -22,7 +22,7 @@ function assertSameColor(actual, expected, message) {
     `${message}: expected ${expected}, saw ${actual}`);
 }
 
-export async function openWideGame(page, url) {
+export async function openWideGame(page, url, routeLayout = layout) {
   const board = page.getByRole('region', { name: '格子地图' }).locator('canvas');
   const playerCell = page.locator('#player-cell');
   const viewport = page.locator('#visible-chunks');
@@ -85,7 +85,7 @@ export async function openWideGame(page, url) {
     assert.deepEqual(await position(), target);
   }
 
-  async function inspect(cell, ...details) {
+  async function aimAt(cell) {
     const camera = await view();
     const bounds = await board.boundingBox();
     const x = (cell.col + 0.5) * TILE_SIZE - camera.left;
@@ -93,6 +93,10 @@ export async function openWideGame(page, url) {
     assert.ok(bounds && x >= 0 && y >= 0 && x < camera.width && y < camera.height,
       `Tile ${coordinates(cell)} must be inside the camera view`);
     await page.mouse.move(bounds.x + x * bounds.width / camera.width, bounds.y + y * bounds.height / camera.height);
+  }
+
+  async function inspect(cell, ...details) {
+    await aimAt(cell);
     const label = await hover.textContent();
     for (const expected of [coordinates(cell), ...details]) {
       assert.ok(label.includes(expected), `Expected ${expected} while hovering, saw ${label}`);
@@ -109,11 +113,11 @@ export async function openWideGame(page, url) {
     });
   }
 
-  async function dig(cell) {
+  async function dig(cell, hp = dirtMaxHp) {
     await inspect(cell, '可挖地形');
     await page.mouse.down({ button: 'left' });
     try {
-      await page.clock.runFor(dirtMaxHp * attackIntervalMs + 64);
+      await page.clock.runFor(hp * attackIntervalMs + 64);
     } finally {
       await page.mouse.up({ button: 'left' });
     }
@@ -130,11 +134,11 @@ export async function openWideGame(page, url) {
     const direction = Math.sign(target[axis] - start[axis]);
     for (let value = start[axis] + direction; direction !== 0 && (target[axis] - value) * direction >= 0; value += direction) {
       const cell = { ...start, [axis]: value };
-      const marker = layout[cell.row][cell.col];
-      assert.notEqual(marker, '#', `Seed ${seed} must offer a diggable line through ${coordinates(cell)}`);
-      if (marker === '+') {
+      const marker = routeLayout[cell.row][cell.col];
+      assert.ok(marker !== '#' && marker !== '~', `Seed ${seed} must offer a diggable line through ${coordinates(cell)}`);
+      if (marker === '+' || marker === '2') {
         await walkTo({ ...cell, [axis]: value - direction });
-        await dig(cell);
+        await dig(cell, marker === '2' ? TERRAIN_HP_BY_LEVEL[2] : dirtMaxHp);
       }
     }
     await walkTo(target, center);
@@ -152,7 +156,7 @@ export async function openWideGame(page, url) {
   assert.match(await page.locator('#map-size').textContent(), /40 × 96 · 种子 12/);
   await page.clock.pauseAt(await page.evaluate(() => Date.now() + 200));
   assert.deepEqual(await position(), GENERATED_SPAWN);
-  return { view, position, holdKey, walkTo, openLineTo, inspect, tilePixel, settleView };
+  return { view, position, holdKey, walkTo, openLineTo, aimAt, inspect, tilePixel, settleView };
 }
 
 export async function runFix02MapSmoke(page, url) {

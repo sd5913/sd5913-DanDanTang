@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import { ECONOMY_PROTOTYPE } from '../src/expedition-economy.ts';
-import { GENERATED_SPAWN } from '../src/generated-map.ts';
+import { generateExpeditionBiomes } from '../src/expedition-biomes.ts';
+import { addExpeditionTiers } from '../src/expedition-terrain.ts';
+import { GENERATED_SPAWN, generateExpeditionMap } from '../src/generated-map.ts';
 import { MINING_CONFIG } from '../src/mining-config.ts';
 import { openWideGame } from './browser-fix02.mjs';
 
@@ -228,4 +230,75 @@ export async function runResearchSmoke(page, url) {
   await game.openLineTo(beforeSeam);
   await game.inspect(advancedDirt, '可挖地形', 'HP 8/8');
   await assertSeamBlocked();
+}
+
+export async function runBiomeFogSmoke(page, url) {
+  const seeded = generateExpeditionBiomes(generateExpeditionMap(12), 12);
+  const game = await openWideGame(page, url, addExpeditionTiers(seeded.layout));
+  const hover = page.locator('#hover-cell');
+  const biome = page.locator('#expedition-biome');
+  const target = { col: GENERATED_SPAWN.col, row: 83 };
+  const northernStep = { col: GENERATED_SPAWN.col, row: 90 };
+  const plain = { col: GENERATED_SPAWN.col, row: 73 };
+  const lakeShore = { col: GENERATED_SPAWN.col, row: 50 };
+  const water = { col: lakeShore.col + 1, row: lakeShore.row };
+  const roundUrl = page.url();
+
+  async function interactWith(cell, ...details) {
+    await game.inspect(cell, ...details);
+    await page.mouse.down({ button: 'left' });
+    await page.mouse.up({ button: 'left' });
+    await page.clock.runFor(32);
+  }
+
+  async function observe(visibility) {
+    await game.aimAt(target);
+    await page.clock.runFor(32);
+    assert.equal(await hover.getAttribute('data-visibility'), visibility);
+    const label = await hover.textContent();
+    if (visibility === 'visible') {
+      assert.match(label, /可挖地形.*\(19, 83\).*HP 5\/5/);
+    } else {
+      assert.doesNotMatch(label, /HP|可挖地形|不可破坏岩石|空地|水域/,
+        'A tile outside current vision must not disclose its live terrain and HP');
+    }
+    return game.tilePixel(target);
+  }
+
+  const hidden = await observe('unknown');
+  await game.walkTo(northernStep);
+  const visible = await observe('visible');
+  assert.notDeepEqual(visible, hidden, 'A fully hidden tile must be drawn differently from a visible tile');
+
+  await game.walkTo(GENERATED_SPAWN);
+  const explored = await observe('explored');
+  assert.notDeepEqual(explored, visible, 'An explored tile outside vision must be dimmed');
+  assert.notDeepEqual(explored, hidden, 'Explored terrain must remain distinguishable from unknown terrain');
+
+  await game.holdKey('KeyR', () => page.clock.runFor(48));
+  assert.equal(page.url(), roundUrl);
+  assert.deepEqual(await game.position(), GENERATED_SPAWN);
+  assert.deepEqual(await observe('unknown'), hidden, 'R must clear exploration memory for the same seed');
+
+  await page.locator('#card-economy').click();
+  await interactWith(economyCell, '空地');
+  await page.clock.runFor(2 * ECONOMY_PROTOTYPE.productionIntervalMs + 150);
+  await page.locator('#research-tool').click();
+  await game.openLineTo(plain);
+  assert.equal(await biome.textContent(), '平原', 'An excavated plain tile must preserve its biome');
+  await game.openLineTo(lakeShore);
+  assert.equal(await biome.textContent(), '湖泊');
+  await interactWith(water, '水域');
+  assert.match(await page.locator('#dig-result').textContent(), /水域不可挖掘/);
+  await game.holdKey('KeyD', () => page.clock.runFor(500));
+  assert.deepEqual(await game.position(), lakeShore, 'Water must block movement from the dry shore');
+  await game.inspect(water, '水域');
+
+  await page.clock.resume();
+  const debugUrl = new URL(roundUrl);
+  debugUrl.searchParams.set('fog', 'off');
+  assert.equal((await page.goto(debugUrl.href))?.status(), 200);
+  await page.waitForFunction(() => Number(document.querySelector('#visible-chunks')?.dataset.worldWidth) > 0);
+  await game.inspect(target, '可挖地形', 'HP 5/5');
+  assert.equal(await hover.getAttribute('data-visibility'), null, 'The explicit fog-off view must show actual terrain');
 }

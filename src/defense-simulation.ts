@@ -1,4 +1,5 @@
 import { EnemyNavigation } from "./enemy-navigation.ts";
+import { BIOME_PROTOTYPE } from "./biome-effects.ts";
 import type { Building } from "./buildings.ts";
 import type { GridPosition, TerrainMap } from "./terrain.ts";
 
@@ -242,7 +243,8 @@ export class DefenseSimulation {
   private fireTower(tower: Building): void {
     if ((this.towerReadyAt.get(tower.cell) ?? 0) > this.timeMs) return;
     let selected: EnemyState | undefined;
-    let closest = DEFENSE_CONFIG.towerRange ** 2;
+    const extraRange = this.map.getBiome(tower.cell) === "highland" ? BIOME_PROTOTYPE.highlandTowerRangeBonus : 0;
+    let closest = (DEFENSE_CONFIG.towerRange + extraRange) ** 2;
     for (const enemy of this.units.values()) {
       const position = enemyPosition(enemy);
       const distance = (position.x - tower.cell.col - 0.5) ** 2 + (position.y - tower.cell.row - 0.5) ** 2;

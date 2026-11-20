@@ -1,6 +1,9 @@
 import Phaser from "phaser";
+import { BIOME_PROTOTYPE } from "./biome-effects.ts";
 import { DefenseDebug } from "./defense-debug.ts";
 import type { DefenseScenario } from "./defense-debug.ts";
+import { ExplorationFog } from "./fog.ts";
+import { FogRenderer } from "./fog-renderer.ts";
 import { DebugHud } from "./hud.ts";
 import { MINING_CONFIG } from "./mining-config.ts";
 import { MiningSession } from "./mining.ts";
@@ -8,7 +11,7 @@ import type { MiningStrike } from "./mining.ts";
 import { Player, TILE_SIZE, worldToCell } from "./player.ts";
 import { GridRenderer } from "./renderer.ts";
 import { TerrainMap } from "./terrain.ts";
-import type { GridPosition } from "./terrain.ts";
+import type { GridPosition, TerrainOptions } from "./terrain.ts";
 
 const VISIBLE_COLUMNS = 18;
 const CAMERA_FOLLOW = 0.24;
@@ -20,6 +23,10 @@ export class GridScene extends Phaser.Scene {
   private readonly mining: MiningSession;
   private readonly defenseOptions?: DefenseScenario;
   private readonly wide: boolean;
+  private readonly fog?: ExplorationFog;
+  private fogRenderer?: FogRenderer;
+  private fogCell?: GridPosition;
+  private fogTerrainRevision = -1;
   private readonly previousView = new Phaser.Geom.Rectangle();
   private readonly projectedView = new Phaser.Geom.Rectangle();
   private readonly topLeft = new Phaser.Math.Vector2();
@@ -34,10 +41,13 @@ export class GridScene extends Phaser.Scene {
   private reachedGoal = false;
   private refreshPointerAfterResize = false;
 
-  constructor(layout?: readonly string[], defenseOptions?: DefenseScenario, wide = false) {
+  constructor(
+    layout?: readonly string[], defenseOptions?: DefenseScenario, wide = false, biomes?: TerrainOptions["biomes"],
+  ) {
     super("grid");
-    this.terrain = new TerrainMap(layout, wide ? {} : { autoMerge: false });
+    this.terrain = new TerrainMap(layout, { autoMerge: wide ? undefined : false, biomes });
     this.player = new Player(this.terrain.spawn);
+    if (defenseOptions?.fogEnabled) this.fog = new ExplorationFog(this.terrain.columns, this.terrain.rows);
     this.mining = new MiningSession(this.terrain, MINING_CONFIG, () => this.defense?.toolLevel ?? 1);
     this.defenseOptions = defenseOptions;
     this.wide = wide;
@@ -45,6 +55,7 @@ export class GridScene extends Phaser.Scene {
 
   create(): void {
     this.boardRenderer = new GridRenderer(this, this.terrain);
+    if (this.fog) this.fogRenderer = new FogRenderer(this, this.fog);
     this.hud = new DebugHud();
     const keyboard = this.input.keyboard;
     if (!keyboard) throw new Error("Keyboard input is unavailable");
@@ -156,25 +167,46 @@ export class GridScene extends Phaser.Scene {
     const view = this.viewBounds();
     const chunks = this.boardRenderer.syncViewport(this.terrain, view.top, view.bottom);
     this.hud.showViewport(chunks, view);
-    if (!Phaser.Geom.Rectangle.Equals(view, this.previousView) || this.refreshPointerAfterResize) {
+    const fogChanged = this.updateFog();
+    if (fogChanged || !Phaser.Geom.Rectangle.Equals(view, this.previousView) || this.refreshPointerAfterResize) {
       this.previousView.setTo(view.x, view.y, view.width, view.height);
       this.refreshPointerAfterResize = false;
       if (this.hovered || (this.wide && this.input.isOver)) this.inspectPointer(this.input.mousePointer);
     }
-    this.defense?.render(view, this.hovered);
+    this.defense?.render(view, this.hovered, this.isVisible);
+    this.fogRenderer?.render(view);
   }
+
+  private updateFog(): boolean {
+    if (!this.fog) return false;
+    const cell = this.player.cell;
+    const unchangedPosition = this.fogCell?.col === cell.col && this.fogCell.row === cell.row;
+    if (unchangedPosition && this.fogTerrainRevision === this.terrain.revision) return false;
+    this.fogCell = cell;
+    this.fogTerrainRevision = this.terrain.revision;
+    const towers = [];
+    for (const building of this.terrain.getBuildings()) {
+      if (building.kind !== "tower") continue;
+      const extra = this.terrain.getBiome(building.cell) === "highland" ? BIOME_PROTOTYPE.highlandTowerVisionBonus : 0;
+      towers.push({ cell: building.cell, radius: BIOME_PROTOTYPE.towerVision + extra });
+    }
+    this.fog.reveal(cell, towers);
+    return true;
+  }
+
+  private readonly isVisible = (cell: GridPosition): boolean => !this.fog || this.fog.visibility(cell) === "visible";
 
   private updateHover(cell: GridPosition | null): void {
     this.hovered = cell;
-    this.boardRenderer.showHover(cell);
-    this.hud.showHover(cell, cell ? this.terrain.getCell(cell) : undefined);
+    this.boardRenderer.showHover(cell && this.isVisible(cell) ? cell : null);
+    this.hud.showHover(cell, cell ? this.terrain.getCell(cell) : undefined, cell ? this.fog?.visibility(cell) : undefined);
   }
 
   private beginMining(pointer: Phaser.Input.Pointer): void {
     if (pointer.button !== 0 || !pointer.leftButtonDown() || document.hidden || !document.hasFocus() || this.game.isPaused) return;
     const target = this.pointerCell(pointer);
     if (!target) return;
-    if (this.defense?.placeSelectedCard(target)) {
+    if (this.defense?.placeSelectedCard(target, this.isVisible(target))) {
       this.stopMining();
       return;
     }
@@ -219,6 +251,7 @@ export class GridScene extends Phaser.Scene {
     const cell = this.player.cell;
     this.boardRenderer.movePlayer(this.player.position);
     this.hud.showPlayer(cell, this.terrain.worldToChunk(cell)?.chunk);
+    this.defense?.showBiome(this.terrain.getBiome(cell) ?? "ordinary");
     if (!this.reachedGoal && this.terrain.isGoal(cell)) {
       this.reachedGoal = true;
       this.hud.showGoal(true);
@@ -230,6 +263,8 @@ export class GridScene extends Phaser.Scene {
     this.terrain.reset();
     this.player.reset(this.terrain.spawn);
     this.defense?.reset();
+    this.fog?.reset();
+    this.fogTerrainRevision = -1;
     this.reachedGoal = false;
     this.boardRenderer.redraw(this.terrain);
     this.updatePlayer();

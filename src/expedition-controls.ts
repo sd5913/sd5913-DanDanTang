@@ -1,5 +1,7 @@
 import type Phaser from "phaser";
 import type { BuildingKind } from "./buildings.ts";
+import { BIOME_NAMES } from "./biome-effects.ts";
+import type { BiomeId } from "./expedition-biomes.ts";
 import { CARD_KINDS, ECONOMY_PROTOTYPE, ExpeditionEconomy, TECHNOLOGY_PROTOTYPE } from "./expedition-economy.ts";
 import type { CardKind } from "./expedition-economy.ts";
 import type { GridPosition, TerrainMap } from "./terrain.ts";
@@ -34,6 +36,7 @@ export class ExpeditionControls {
   private readonly rebuild = field<HTMLButtonElement>("rebuild-technology");
   private readonly status = field("expedition-feedback");
   private readonly building = field("expedition-building");
+  private readonly biome = field("expedition-biome");
 
   constructor(scene: Phaser.Scene, map: TerrainMap, seed: number, actions: ExpeditionActions) {
     this.economy = new ExpeditionEconomy(map, seed);
@@ -99,6 +102,10 @@ export class ExpeditionControls {
 
   showBuilding(text: string): void {
     write(this.building, text);
+  }
+
+  showBiome(biome: BiomeId): void {
+    write(this.biome, BIOME_NAMES[biome]);
   }
 
   showFeedback(text: string): void {

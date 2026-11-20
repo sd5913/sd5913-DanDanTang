@@ -1,10 +1,12 @@
 import type { MiningStrike } from "./mining.ts";
+import type { FogVisibility } from "./fog.ts";
 import type { ChunkId, DigFailure, GridPosition, TerrainCell, TerrainType } from "./terrain.ts";
 
 const TERRAIN_NAMES: Record<TerrainType, string> = {
   empty: "空地",
   dirt: "可挖地形",
   rock: "不可破坏岩石",
+  water: "水域",
 };
 
 const DIG_FAILURE_MESSAGES: Record<DigFailure, string> = {
@@ -12,6 +14,7 @@ const DIG_FAILURE_MESSAGES: Record<DigFailure, string> = {
   "invalid-origin": "玩家所在格不可通行",
   "out-of-reach": "只能挖掘上下左右相邻格",
   rock: "岩石不可挖掘",
+  water: "水域不可挖掘",
   empty: "目标格已经是空地",
   "tool-level": "需要更高等级的工具",
   "invalid-damage": "工具伤害无效",
@@ -54,7 +57,13 @@ export class DebugHud {
     }
   }
 
-  showHover(cell: GridPosition | null, state?: TerrainCell): void {
+  showHover(cell: GridPosition | null, state?: TerrainCell, visibility?: FogVisibility): void {
+    if (visibility && this.hover.dataset.visibility !== visibility) this.hover.dataset.visibility = visibility;
+    if (!visibility && this.hover.dataset.visibility) delete this.hover.dataset.visibility;
+    if (visibility === "unknown" || visibility === "explored") {
+      writeStatus(this.hover, visibility === "unknown" ? "未探索" : "已探索 · 当前不可见");
+      return;
+    }
     if (!cell || !state) {
       writeStatus(this.hover, "—");
       return;

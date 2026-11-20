@@ -1,6 +1,7 @@
 import Phaser from "phaser";
 import { DEFENSE_LAYOUT, DEFENSE_TARGET, ENEMY_ENTRY } from "./defense-map.ts";
 import { DENSE_LONG_MAP_LAYOUT } from "./dense-long-map.ts";
+import { BIOME_GENERATOR_VERSION, generateExpeditionBiomes } from "./expedition-biomes.ts";
 import { addExpeditionTiers } from "./expedition-terrain.ts";
 import {
   GENERATED_ENEMY_ENTRY, GENERATED_GOAL, generateExpeditionWorld,
@@ -19,11 +20,12 @@ const play = params.get("mode") === "play";
 const fixture = params.get("map");
 const wide = play || (fixture !== "fix01" && (defense || (fixture !== "single" && fixture !== "regression")));
 const world = wide ? generateExpeditionWorld(selectWorldSeed(params.get("seed"))) : undefined;
+const landscape = play && world ? generateExpeditionBiomes(world.layout, world.effectiveSeed) : undefined;
 
 let layout: readonly string[];
 let phase: string;
 if (world) {
-  layout = play ? addExpeditionTiers(world.layout) : world.layout;
+  layout = landscape ? addExpeditionTiers(landscape.layout) : world.layout;
   phase = "P0-B FIX02";
 } else if (defense || fixture === "fix01") {
   layout = defense ? DEFENSE_LAYOUT : DENSE_LONG_MAP_LAYOUT;
@@ -36,14 +38,15 @@ if (world) {
   phase = "P0-A.2";
 }
 const defenseOptions = play && world
-  ? { entry: GENERATED_ENEMY_ENTRY, target: GENERATED_GOAL, worldSeed: world.effectiveSeed }
+  ? { entry: GENERATED_ENEMY_ENTRY, target: GENERATED_GOAL, worldSeed: world.effectiveSeed, fogEnabled: params.get("fog") !== "off" }
   : !defense ? undefined : wide
     ? { entry: GENERATED_ENEMY_ENTRY, target: GENERATED_GOAL }
     : { entry: ENEMY_ENTRY, target: DEFENSE_TARGET };
 document.documentElement.classList.toggle("wide-map", wide);
 document.title = `${phase} · ${play ? "掘进对局" : defense ? "防御灰盒" : "格子地形与持续挖掘"}`;
+const worldDetails = world ? worldSeedLabel(landscape ? { ...world, generatorVersion: BIOME_GENERATOR_VERSION } : world) : "";
 document.getElementById("map-size")!.textContent =
-  `${phase} / ${layout[0].length} × ${layout.length}${world ? ` · ${worldSeedLabel(world)}` : ""}`;
+  `${phase} / ${layout[0].length} × ${layout.length}${worldDetails ? ` · ${worldDetails}` : ""}`;
 
 if (world) {
   const url = new URL(window.location.href);
@@ -71,5 +74,5 @@ new Phaser.Game({
     : { mode: Phaser.Scale.FIT, autoCenter: Phaser.Scale.CENTER_BOTH },
   audio: { noAudio: true },
   input: { touch: false, gamepad: false },
-  scene: new GridScene(layout, defenseOptions, wide),
+  scene: new GridScene(layout, defenseOptions, wide, landscape?.biomes),
 });

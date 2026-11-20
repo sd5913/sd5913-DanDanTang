@@ -1,5 +1,6 @@
 import { BUILDING_SYNTHESIS_CONFIG, BuildingStore } from "./buildings.ts";
 import type { Building, BuildingKind, WallImpact } from "./buildings.ts";
+import type { BiomeId } from "./expedition-biomes.ts";
 import { TERRAIN_HP_BY_LEVEL } from "./mining-config.ts";
 import { TEST_MAP_LAYOUT } from "./test-map.ts";
 
@@ -17,7 +18,7 @@ export interface ChunkId {
   readonly chunkRow: number;
 }
 
-export type TerrainType = "empty" | "dirt" | "rock";
+export type TerrainType = "empty" | "dirt" | "rock" | "water";
 
 interface TerrainCellFields {
   readonly terrainLevel: number;
@@ -28,6 +29,7 @@ export type TerrainCell = TerrainCellFields & (
   | { readonly terrain: "dirt"; readonly hp: number; readonly maxHp: number }
   | { readonly terrain: "empty"; readonly hp: 0; readonly maxHp: 0 }
   | { readonly terrain: "rock"; readonly hp: null; readonly maxHp: null }
+  | { readonly terrain: "water"; readonly hp: null; readonly maxHp: null }
 );
 
 export interface TerrainReader {
@@ -46,6 +48,7 @@ export type DigFailure =
   | "invalid-origin"
   | "out-of-reach"
   | "rock"
+  | "water"
   | "empty"
   | "tool-level"
   | "invalid-damage";
@@ -65,6 +68,9 @@ function dirt(level: keyof typeof TERRAIN_HP_BY_LEVEL): TerrainCell {
 const ROCK: TerrainCell = Object.freeze({
   terrain: "rock", terrainLevel: 1, buildingId: null, hp: null, maxHp: null,
 });
+const WATER: TerrainCell = Object.freeze({
+  terrain: "water", terrainLevel: 0, buildingId: null, hp: null, maxHp: null,
+});
 const MARKER_CELLS = new Map<string, TerrainCell>([
   [".", EMPTY],
   ["G", EMPTY],
@@ -72,12 +78,14 @@ const MARKER_CELLS = new Map<string, TerrainCell>([
   ["+", dirt(1)],
   ["2", dirt(2)],
   ["#", ROCK],
+  ["~", WATER],
 ]);
 
 type TerrainChunk = TerrainCell[][];
 
-interface TerrainOptions {
+export interface TerrainOptions {
   readonly autoMerge?: boolean;
+  readonly biomes?: readonly (readonly BiomeId[])[];
 }
 
 function chunkRowFor(row: number): number {
@@ -91,6 +99,7 @@ export class TerrainMap implements TerrainReader {
 
   readonly #layout: readonly string[];
   readonly #initialChunks: readonly TerrainChunk[];
+  readonly #biomes?: readonly (readonly BiomeId[])[];
   readonly #buildings: BuildingStore;
   readonly #autoMerge: boolean;
   #chunks: TerrainChunk[];
@@ -104,6 +113,10 @@ export class TerrainMap implements TerrainReader {
     if (this.columns === 0 || this.rows % CHUNK_ROWS !== 0 || this.#layout.some((row) => row.length !== this.columns)) {
       throw new RangeError(`Terrain layout must have a common positive width and complete ${CHUNK_ROWS}-row chunks`);
     }
+    if (options.biomes && (options.biomes.length !== this.rows || options.biomes.some((row) => row.length !== this.columns))) {
+      throw new RangeError("Biome metadata must match the terrain dimensions");
+    }
+    this.#biomes = options.biomes?.map((row) => [...row]);
     this.#buildings = new BuildingStore(this.columns);
     const spawnRow = this.#layout.findIndex((row) => row.includes("S"));
     const spawnCol = this.#layout[spawnRow]?.indexOf("S") ?? -1;
@@ -177,6 +190,11 @@ export class TerrainMap implements TerrainReader {
     return this.isInside(position) && this.#layout[position.row][position.col] === "G";
   }
 
+  getBiome(position: GridPosition): BiomeId | undefined {
+    if (!this.isInside(position)) return undefined;
+    return this.#biomes?.[position.row][position.col] ?? "ordinary";
+  }
+
   getBuilding(position: GridPosition): Building | undefined {
     return this.isInside(position) ? this.#buildings.get(position) : undefined;
   }
@@ -247,6 +265,7 @@ export class TerrainMap implements TerrainReader {
     const distance = Math.abs(from.col - target.col) + Math.abs(from.row - target.row);
     if (distance !== 1) return "out-of-reach";
     if (cell.terrain === "rock") return "rock";
+    if (cell.terrain === "water") return "water";
     if (cell.terrain === "empty") return "empty";
     if (!Number.isInteger(toolLevel) || toolLevel < cell.terrainLevel) return "tool-level";
     return cell;

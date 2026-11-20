@@ -2,6 +2,7 @@ import Phaser from "phaser";
 import { DefenseSimulation, enemyPosition, sameCell } from "./defense-simulation.ts";
 import type { DefenseEvent } from "./defense-simulation.ts";
 import { BUILDING_NAMES, ExpeditionControls } from "./expedition-controls.ts";
+import type { BiomeId } from "./expedition-biomes.ts";
 import { cellCenter, PLAYER_HALF_SIZE, TILE_SIZE } from "./player.ts";
 import type { Player } from "./player.ts";
 import type { GridPosition, TerrainMap } from "./terrain.ts";
@@ -26,6 +27,7 @@ export interface DefenseScenario {
   readonly entry: GridPosition;
   readonly target: GridPosition;
   readonly worldSeed?: number;
+  readonly fogEnabled?: boolean;
 }
 
 export class DefenseDebug {
@@ -87,10 +89,11 @@ export class DefenseDebug {
     this.expedition?.refresh();
   }
 
-  render(view: Phaser.Geom.Rectangle, cell: GridPosition | null): void {
+  render(view: Phaser.Geom.Rectangle, cell: GridPosition | null, isVisible: (cell: GridPosition) => boolean): void {
     const graphics = this.graphics.clear();
     let labelCount = 0;
     for (const building of this.map.getBuildings()) {
+      if (!isVisible(building.cell)) continue;
       const { x, y } = cellCenter(building.cell);
       if (x < view.left - TILE_SIZE / 2 || x > view.right + TILE_SIZE / 2
         || y < view.top - TILE_SIZE / 2 || y > view.bottom + TILE_SIZE / 2) continue;
@@ -111,6 +114,7 @@ export class DefenseDebug {
 
     this.shots = this.shots.filter((trace) => trace.expires > this.timeMs);
     for (const { event } of this.shots) {
+      if (!isVisible(event.from) || !isVisible({ col: Math.floor(event.to.x), row: Math.floor(event.to.y) })) continue;
       const start = cellCenter(event.from);
       const endX = event.to.x * TILE_SIZE;
       const endY = event.to.y * TILE_SIZE;
@@ -128,6 +132,7 @@ export class DefenseDebug {
       northRow = Math.min(northRow, enemy.cell.row);
       if (enemy.unreachable) unreachable += 1;
       const point = enemyPosition(enemy);
+      if (!isVisible({ col: Math.floor(point.x), row: Math.floor(point.y) })) continue;
       const x = point.x * TILE_SIZE;
       const y = point.y * TILE_SIZE;
       if (!view.contains(x, y)) continue;
@@ -137,7 +142,7 @@ export class DefenseDebug {
     }
 
     this.showStats(active, visible, Number.isFinite(northRow) ? northRow : -1, unreachable);
-    const building = cell && this.map.getBuilding(cell);
+    const building = cell && isVisible(cell) ? this.map.getBuilding(cell) : undefined;
     const name = building && (building.kind === "tower" && !this.expedition ? "测试塔" : BUILDING_NAMES[building.kind]);
     const level = building?.level === 2 ? " · Lv.2" : "";
     const description = building ? `${name} ${coordinates(building.cell)} · ${building.hp} HP${level}` : "—";
@@ -153,13 +158,15 @@ export class DefenseDebug {
     write(this.status, "等待布防或生成敌人");
   }
 
-  placeSelectedCard(cell: GridPosition): boolean {
+  placeSelectedCard(cell: GridPosition, visible: boolean): boolean {
     if (!this.expedition?.hasSelection) return false;
-    this.expedition.placeSelected(cell, this.canPlaceAt(cell));
+    this.expedition.placeSelected(cell, visible && this.canPlaceAt(cell));
     return true;
   }
 
   get toolLevel(): 1 | 2 { return this.expedition?.economy.toolLevel ?? 1; }
+
+  showBiome(biome: BiomeId): void { this.expedition?.showBiome(biome); }
 
   private readonly spawn = (): void => {
     const count = this.simulation.requestSpawn(Number(this.count.value), Number(this.damage.value));
@@ -205,6 +212,7 @@ export class DefenseDebug {
     if (event.type === "wallImpact") {
       const result = event.destroyed ? "墙已毁" : `墙剩 ${event.hp} HP`;
       write(this.status, `撞墙 · -${event.damage} HP · ${result}`);
+      this.expedition?.showFeedback(`城墙受袭 · -${event.damage} HP · ${result}`);
     }
     if (event.type === "towerKill") write(this.status, `测试塔击杀敌人 ${event.enemyId}`);
   }

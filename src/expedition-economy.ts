@@ -1,4 +1,5 @@
 import type { Building } from "./buildings.ts";
+import { BIOME_PROTOTYPE } from "./biome-effects.ts";
 import type { DefenseEvent } from "./defense-simulation.ts";
 import type { GridPosition, TerrainMap } from "./terrain.ts";
 
@@ -69,9 +70,11 @@ export class ExpeditionEconomy {
 
   advance(deltaMs: number): void {
     if (!Number.isFinite(deltaMs) || deltaMs <= 0) return;
-    const interval = ECONOMY_PROTOTYPE.productionIntervalMs;
     for (const building of this.#map.getBuildings()) {
       if (building.kind !== "economy") continue;
+      const biome = this.#map.getBiome(building.cell);
+      const interval = biome === "plain" ? BIOME_PROTOTYPE.plainProductionMs : biome === "highland"
+        ? BIOME_PROTOTYPE.highlandProductionMs : ECONOMY_PROTOTYPE.productionIntervalMs;
       const elapsed = (this.#productionMs.get(building.cell) ?? 0) + deltaMs;
       this.#balance += Math.floor(elapsed / interval) * ECONOMY_PROTOTYPE.productionAmount;
       this.#productionMs.set(building.cell, elapsed % interval);
