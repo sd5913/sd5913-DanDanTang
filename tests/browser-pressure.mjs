@@ -174,7 +174,7 @@ function assertCombatAccounting(state, compareTotals = false) {
   for (const wave of state.combat) {
     assert.equal(wave.planned, wave.spawned + wave.pending + wave.cancelledPending);
     assert.equal(wave.spawned, wave.active + wave.cancelledActive + wave.towerKills
-      + wave.wallImpacts + wave.buildingContacts + wave.playerContacts);
+      + wave.wallImpacts + wave.playerContacts);
     assert.ok(wave.active <= wave.peakActive && wave.peakActive <= wave.spawned);
     assert.ok(wave.threatened <= wave.spawned);
     assert.equal(wave.firstSpawnAtMs === null, wave.spawned === 0);
@@ -274,6 +274,36 @@ export async function runPressureQueueRolloverSmoke(page, baseUrl) {
     nextWave: queued.waveId,
     nextWavePending: queued.pending,
   };
+}
+
+export async function runFirstWaveFacilitySmoke(page, baseUrl) {
+  const game = await openCombatGame(page, baseUrl, 'baseline');
+  const technology = ECONOMY_PROTOTYPE.technologyCell;
+  await game.inspect(technology, '空地');
+  await page.clock.runFor(32);
+  assert.match(await page.locator('#expedition-building').textContent(), /科技设施.+1 HP$/);
+  await game.walkTo({ col: 19, row: 84 }, true);
+  await game.walkTo({ col: 22, row: 84 }, true);
+  const hit = await watchWave(page, (state) => state.combat[0]?.buildingsDestroyed === 1,
+    'The first wave must destroy the facility with a single contact');
+  assert.ok(await page.locator('#rebuild-technology').isVisible());
+  const firstAtHit = combatWave(hit, 1);
+  assert.equal(firstAtHit.buildingContacts, 1);
+  assert.equal(firstAtHit.buildingDamage, 1);
+  assert.equal(hit.removed, 0, 'A building hit does not consume its attacker');
+  assert.ok(firstAtHit.active > 0);
+  assertCombatAccounting(hit, true);
+  const end = await watchWave(page, (state) => state.phase === 'recovering' && state.wave === 1,
+    'The complete first attack phase must close without consuming its units at the facility', 8_000);
+  const first = combatWave(end, 1);
+  assert.equal(first.spawned, first.planned);
+  assert.equal(first.active, first.spawned);
+  assert.equal(first.buildingContacts, 1);
+  assert.equal(first.towerKills + first.wallImpacts + first.playerContacts, 0);
+  assertCombatAccounting(end, true);
+  return { planned: first.planned, spawned: first.spawned, activeAfterWave: first.active,
+    buildingContacts: first.buildingContacts, buildingDamage: first.buildingDamage,
+    removed: end.removed, endReason: first.attackEndReason };
 }
 
 export async function runPressurePlayerContactSmoke(page, baseUrl) {

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { ECONOMY_PROTOTYPE, toEconomyTenths } from "../src/expedition-economy.ts";
 import { DEFAULT_MAP_SEED } from "../src/generated-map.ts";
-import { replayChallengeFunding, replayOpeningBattle, replayOpeningStrategies } from "./challenge-opening.mjs";
+import { replayChallengeFunding, replayChallengeResearch, replayOpeningBattle, replayOpeningStrategies } from "./challenge-opening.mjs";
 
 const sessions = replayOpeningStrategies();
 const find = (difficulty, strategy) => sessions.find((run) => run.difficulty === difficulty && run.strategy === strategy);
@@ -14,19 +14,24 @@ test("generated maps fund three real paid Challenge draws from legal starter exc
     assert.equal(trial.effectiveSeed, seed);
     assert.equal(trial.start.totals.balance, 0);
     assert.deepEqual(trial.start.cards, { wall: 0, tower: 0, economy: 0 });
-    assert.equal(trial.start.technologyHp, 10);
+    assert.equal(trial.start.technologyHp, null);
     assert.equal(trial.start.toolLevel, 1);
     assert.ok(trial.initialStarterDirt >= 18);
     assert.equal(trial.firstIncomeAtMs, 0);
     assert.equal(trial.firstCanDrawAtMs, trial.budgets[0].atMs);
+    assert.equal(trial.facility.cost, 10);
+    assert.equal(trial.facility.balanceBefore, 10);
+    assert.equal(trial.facility.balanceAfter, 0);
+    assert.ok(trial.facility.atMs < trial.budgets[0].atMs);
     assert.deepEqual(trial.budgets.map(({ availableBefore }) => availableBefore), [3, 3, 3]);
     assert.ok(trial.budgets.some(({ card }) => isDefense(card)));
     assert.ok(trial.budgets[2].atMs < 60_000);
     assert.ok(trial.budgets[0].atMs < trial.budgets[1].atMs && trial.budgets[1].atMs < trial.budgets[2].atMs);
-    assert.equal(trial.miningActions.length, 18);
+    assert.equal(trial.miningActions.length, 38);
     assert.ok(trial.miningActions.every(({ from, target, damage, incomeTenths }) =>
       Math.abs(from.col - target.col) + Math.abs(from.row - target.row) === 1 && damage === 5 && incomeTenths === 5));
-    assert.equal(trial.finish.totals.miningIncome, 9);
+    assert.equal(trial.finish.totals.miningIncome, 19);
+    assert.equal(trial.finish.totals.technologySpend, 10);
     assert.equal(trial.finish.totals.cardSpend, 9);
     assert.equal(trial.finish.totals.killIncome, 0);
     assert.equal(trial.finish.totals.productionIncome, 0);
@@ -35,6 +40,26 @@ test("generated maps fund three real paid Challenge draws from legal starter exc
       assert.deepEqual(trial.budgets.map(({ card }) => card), ["economy", "economy", "tower"]);
       assert.equal(trial.firstDefenseDrawAtMs, trial.budgets[2].atMs);
     }
+  }
+});
+
+test("the first paid card is timely and makes early Lv.2 research a meaningful trade-off", () => {
+  for (const seed of [12, 9, 512, 1091]) {
+    const optimized = replayChallengeResearch(seed, 0);
+    const withDeliberation = replayChallengeResearch(seed, 250);
+    const exposed = replayChallengeResearch(seed, 375);
+    for (const replay of [optimized, withDeliberation]) {
+      assert.ok(replay.facilityAtMs < replay.cardAtMs && replay.cardAtMs < 60_000);
+      assert.equal(replay.researchCost, 20);
+      assert.equal(replay.income, 33);
+      assert.equal(replay.toolLevel, 2);
+      assert.ok(replay.researchAtMs - replay.cardAtMs > 20_000);
+    }
+    assert.ok(optimized.researchAtMs < 60_000, "A brisk player can prioritize research");
+    assert.ok(withDeliberation.researchAtMs >= 58_000, "Deliberate excavation takes most of the preparation window");
+    assert.ok(exposed.facilityAtMs < exposed.cardAtMs && exposed.cardAtMs < 60_000);
+    assert.equal(exposed.firstWaveAtMs, 60_000);
+    assert.equal(exposed.researchAtMs, null, "Continuing to mine without deploying the card leaves the facility exposed");
   }
 });
 
@@ -74,6 +99,7 @@ test("natural cards support wall-only, tower-only and mixed Challenge defense in
   assert.ok(mixed.firstWave.combatAtEnd.towerKills > 0);
   assert.ok(mixed.firstWave.combatAtEnd.wallImpacts > 0);
   for (const run of outcomes) {
+    assert.equal(run.facility.cost, 10);
     assert.equal(run.result, "wave-2");
     assert.equal(run.firstWave.issuedAtMs, 60_000);
     assert.equal(run.firstWave.combatAtEnd.spawned, 8);

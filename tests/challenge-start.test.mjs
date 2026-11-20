@@ -6,7 +6,7 @@ import { ExpeditionRound } from "../src/expedition-round.ts";
 import { generateExpeditionMap } from "../src/generated-map.ts";
 import { TerrainMap } from "../src/terrain.ts";
 
-test("Challenge starts and resets with zero resources, one technology facility and a level-one tool", () => {
+test("Challenge starts and resets without resources or technology, with a level-one tool", () => {
   assert.equal(readDifficulty("challenge"), "challenge");
   const map = new TerrainMap(generateExpeditionMap(12));
   const economy = new ExpeditionEconomy(map, 12, undefined, "challenge");
@@ -15,15 +15,20 @@ test("Challenge starts and resets with zero resources, one technology facility a
     assert.equal(economy.balance, 0);
     assert.deepEqual(economy.cards, { wall: 0, tower: 0, economy: 0 });
     assert.equal(economy.toolLevel, 1);
-    assert.equal(economy.hasTechnology, true);
-    assert.deepEqual([...map.getBuildings()].map((item) => item.kind), ["technology"]);
-    assert.equal(map.getBuilding(ECONOMY_PROTOTYPE.technologyCell).hp, 10);
-    assert.equal(economy.drawFailure, "insufficient-funds");
+    assert.equal(economy.hasTechnology, false);
+    assert.equal(economy.technologyCell, undefined);
+    assert.deepEqual([...map.getBuildings()], []);
+    assert.equal(economy.drawFailure, "technology-missing");
+    assert.equal(economy.technologyBuildCost, 10);
+    assert.equal(economy.researchCost, 20);
+    assert.equal(economy.totals.technologySpend, 0);
   }
 
   assertStartingResources();
   economy.handleEvent({ type: "towerKill", enemyId: 1, towerId: "tower" });
   assert.equal(economy.balance, 2);
+  economy.creditMiningDamage(80);
+  assert.ok(economy.buildTechnology({ col: 18, row: 92 }));
   map.reset();
   economy.reset();
   assertStartingResources();
@@ -36,7 +41,14 @@ test("Baseline, A and B keep the original starting funds, cards, tool and techno
     assert.equal(economy.balance, 8);
     assert.deepEqual(economy.cards, { wall: 4, tower: 2, economy: 1 });
     assert.equal(economy.toolLevel, 1);
+    assert.equal(economy.technologyBuildCost, undefined);
+    assert.equal(economy.researchCost, 10);
+    assert.deepEqual(economy.technologyCell, ECONOMY_PROTOTYPE.technologyCell);
     assert.deepEqual([...map.getBuildings()].map((item) => item.kind), ["technology"]);
+    assert.ok(map.removeBuilding(ECONOMY_PROTOTYPE.technologyCell));
+    assert.equal(economy.buildTechnology({ col: 18, row: 92 }), undefined);
+    assert.deepEqual(economy.rebuildTechnology().cell, ECONOMY_PROTOTYPE.technologyCell);
+    assert.equal(economy.balance, 8);
   }
 });
 

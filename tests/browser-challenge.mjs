@@ -1,28 +1,37 @@
 import assert from 'node:assert/strict';
 import { ECONOMY_PROTOTYPE } from '../src/expedition-economy.ts';
-import { GENERATED_SPAWN } from '../src/generated-map.ts';
+import { GENERATED_GOAL, GENERATED_SPAWN } from '../src/generated-map.ts';
 import { MINING_CONFIG } from '../src/mining-config.ts';
 import { assertVisibleCardDraw, readCardInventory } from './browser-card-feedback.mjs';
 import { openWideGame, playFixture } from './browser-fix02.mjs';
+import { findDiggablePath, followRoute } from './browser-goal.mjs';
 
 const emptyCards = { wall: 0, tower: 0, economy: 0 };
 const firstDirt = { col: 19, row: 93 };
-const opening = '挖掘地形获得经济，使用科技设施制造建筑卡。';
+const firstTechnology = { col: 18, row: 92 };
+const technologyCost = 10;
+const researchCost = 20;
 const firstReady = '已可制造第一张建筑卡';
 const { attackIntervalMs, dirtMaxHp } = MINING_CONFIG;
 const cell = (col, row) => ({ col, row });
 const coords = ({ col, row }) => '(' + col + ', ' + row + ')';
 const now = (page) => page.evaluate(() => performance.now());
+const neighbors = ({ col, row }) => [cell(col, row - 1), cell(col - 1, row), cell(col + 1, row), cell(col, row + 1)];
 
 async function openChallenge(page, baseUrl, seed) {
-  const layout = playFixture(seed).layout;
+  const layout = [...playFixture(seed).layout];
   const url = baseUrl + '/?mode=play&difficulty=challenge&debug=1&seed=' + seed;
   const game = await openWideGame(page, url, layout);
   const roundUrl = page.url();
   const maker = page.locator('#make-card');
+  const technology = page.locator('#rebuild-technology');
+  const research = page.locator('#research-tool');
+  const building = page.locator('#expedition-building');
+  const preview = page.locator('#build-preview');
   const status = page.locator('#expedition-feedback');
   const dig = page.locator('#dig-result');
   const cash = () => page.locator('#economy-balance').textContent();
+  const occupied = new Set();
 
   async function assertFresh() {
     assert.equal(page.url(), roundUrl);
@@ -36,12 +45,19 @@ async function openChallenge(page, baseUrl, seed) {
     assert.equal(await cash(), '0.0');
     assert.deepEqual(await readCardInventory(page), emptyCards);
     assert.ok(await maker.isDisabled());
-    assert.ok(await page.locator('#research-tool').isDisabled());
-    assert.ok(await page.locator('#rebuild-technology').isHidden());
-    assert.equal(await status.textContent(), opening);
+    assert.equal(await page.locator('#card-draw-reason').textContent(), '请先建造科技设施');
+    assert.ok(await research.isDisabled());
+    assert.match(await research.textContent(), /20 经济/);
+    assert.ok(await technology.isVisible());
+    assert.ok(await technology.isDisabled());
+    assert.match(await technology.textContent(), /10 经济/);
+    assert.match(await status.textContent(), /挖掘.*科技设施/);
     await game.inspect(ECONOMY_PROTOTYPE.technologyCell, '空地');
     await page.clock.runFor(32);
-    assert.match(await page.locator('#expedition-building').textContent(), /^科技设施 \(17, 90\) · 10 HP$/);
+    assert.equal(await building.textContent(), '—', 'The original slot starts without a gifted facility');
+    await game.inspect(firstTechnology, '空地');
+    await page.clock.runFor(32);
+    assert.equal(await building.textContent(), '—');
     await game.inspect(firstDirt, '可挖地形', 'HP 5/5');
   }
 
@@ -74,6 +90,89 @@ async function openChallenge(page, baseUrl, seed) {
     await game.inspect(target, '空地');
     assert.ok((await dig.textContent()).includes('挖掘成功'));
     assert.match(await dig.textContent(), /\+0\.1 经济$/);
+    const { col, row } = target;
+    layout[row] = layout[row].slice(0, col) + '.' + layout[row].slice(col + 1);
+  }
+
+  async function findReachable(goal) {
+    const start = await game.position();
+    const queue = [{ from: start, path: [start] }];
+    const visited = new Set([coords(start)]);
+    for (let index = 0; index < queue.length; index += 1) {
+      const { from, path } = queue[index];
+      const target = goal(from);
+      if (target) return { target, path };
+      for (const next of neighbors(from)) {
+        const key = coords(next);
+        if (visited.has(key) || occupied.has(key) || !/[.SG]/.test(layout[next.row]?.[next.col] ?? '')) continue;
+        visited.add(key);
+        queue.push({ from: next, path: [...path, next] });
+      }
+    }
+    assert.fail('No legal open route from ' + coords(start));
+  }
+
+  async function followOpenPath(path) {
+    let cursor = 0;
+    while (cursor < path.length - 1) {
+      let end = cursor + 1;
+      const axis = path[cursor].col === path[end].col ? 'col' : 'row';
+      while (end < path.length - 1 && path[end + 1][axis] === path[cursor][axis]) end += 1;
+      await game.walkTo(path[end], true);
+      cursor = end;
+    }
+  }
+
+  async function returnTo(target) {
+    const { path } = await findReachable((from) => coords(from) === coords(target) ? target : undefined);
+    await followOpenPath(path);
+  }
+
+  async function mineTo(balance) {
+    const tiles = 2 * (balance - Number(await cash()));
+    assert.ok(Number.isInteger(tiles) && tiles >= 0, 'Funding must start in exact half-unit increments');
+    for (let index = 0; index < tiles; index += 1) {
+      const { path, target } = await findReachable((from) => neighbors(from).find(({ col, row }) =>
+        row >= 64 && row <= 91 && col >= 9 && col <= 25 && !(col === 19 && row === 83)
+        && layout[row][col] === '+'));
+      await followOpenPath(path);
+      await mine(target);
+    }
+    assert.equal(Number(await cash()), balance);
+  }
+
+  async function buildTechnology(target = firstTechnology, checkInvalid = false) {
+    assert.ok(await technology.isEnabled());
+    const before = Number(await cash());
+    const inventory = await readCardInventory(page);
+    await technology.click();
+    assert.equal(await technology.getAttribute('aria-pressed'), 'true');
+    if (checkInvalid) {
+      await game.inspect(ECONOMY_PROTOTYPE.technologyCell, '空地');
+      await page.clock.runFor(32);
+      assert.equal(await preview.getAttribute('data-reason'), 'out-of-range');
+      await clickBoard();
+      assert.equal(Number(await cash()), before, 'An invalid technology placement must not charge');
+    }
+    await game.inspect(target, '空地');
+    await page.clock.runFor(32);
+    assert.equal(await preview.getAttribute('data-state'), 'valid',
+      'Technology placement at ' + coords(target) + ' rejected: ' + await preview.getAttribute('data-reason'));
+    await clickBoard();
+    assert.equal(Number(await cash()), before - technologyCost);
+    assert.deepEqual(await readCardInventory(page), inventory);
+    await game.inspect(target, '空地');
+    await page.clock.runFor(32);
+    assert.equal(await building.textContent(), '科技设施 ' + coords(target) + ' · 1 HP');
+    occupied.add(coords(target));
+  }
+
+  async function researchTool() {
+    assert.ok(await research.isEnabled());
+    const before = Number(await cash());
+    await research.click();
+    assert.equal(Number(await cash()), before - researchCost);
+    assert.equal(await page.locator('#tool-level').textContent(), 'Lv.2');
   }
 
   async function mineOpening({ inspectPartial = false } = {}) {
@@ -107,10 +206,19 @@ async function openChallenge(page, baseUrl, seed) {
     assert.ok(await maker.isDisabled());
     await game.walkTo(cell(21, 92), true);
     await mine(cell(22, 92));
-    assert.equal(await cash(), '3.0', 'Six mined tiles must pay for exactly one card');
+    assert.equal(await cash(), '3.0', 'Six mined tiles must yield exactly three currency');
+    assert.ok(await maker.isDisabled(), 'Money alone does not manufacture before the facility exists');
+    assert.ok(await technology.isDisabled());
+    await mineTo(technologyCost);
+    await returnTo(GENERATED_SPAWN);
+    await buildTechnology(firstTechnology, inspectPartial);
+    const technologyAt = await now(page);
+    assert.equal(await cash(), '0.0');
+    assert.deepEqual(await readCardInventory(page), emptyCards);
+    await mineTo(ECONOMY_PROTOTYPE.drawCost);
     assert.ok(await maker.isEnabled());
     assert.equal(await status.textContent(), firstReady);
-    return { firstRewardAt, firstAffordableAt: await now(page) };
+    return { firstRewardAt, technologyAt, firstAffordableAt: await now(page) };
   }
 
   async function draw(expected) {
@@ -139,16 +247,22 @@ async function openChallenge(page, baseUrl, seed) {
     await clickBoard();
     assert.match(await status.textContent(), /^已建造/);
     assert.deepEqual(await readCardInventory(page), { ...before, [kind]: before[kind] - 1 });
+    occupied.add(coords(target));
   }
 
   async function reset() {
     await game.holdKey('KeyR', () => page.clock.runFor(48));
+    layout.splice(0, layout.length, ...playFixture(seed).layout);
+    occupied.clear();
     await assertFresh();
   }
 
   await assertFresh();
   const start = await now(page);
-  return { game, layout, cash, status, start, maker, clickBoard, mine, mineOpening, draw, select, place, reset, attemptUnaffordableDraw };
+  return {
+    game, cash, start, maker, technology, building, occupied, clickBoard, mine,
+    mineTo, mineOpening, returnTo, buildTechnology, researchTool, draw, select, place, reset, attemptUnaffordableDraw,
+  };
 }
 
 async function readRound(page) {
@@ -158,6 +272,7 @@ async function readRound(page) {
       phase: document.getElementById('round-state').dataset.phase,
       wave: Number(document.getElementById('round-wave').textContent),
       hp: Number(document.getElementById('player-hp').textContent),
+      buildingContacts: Number(data.buildingContacts),
       combat: JSON.parse(data.waveCombat ?? '[]'),
       economy: JSON.parse(data.waveEconomy ?? '[]'),
     };
@@ -210,6 +325,7 @@ export async function runChallengeWallSmoke(page, baseUrl) {
   assert.equal(await run.draw('wall'), 'wall');
   const firstDefenseAt = await now(page);
   const wall = cell(24, 94);
+  await run.returnTo(cell(21, 92));
   await run.select('wall');
   await game.inspect(wall, '空地');
   await run.clickBoard();
@@ -233,7 +349,8 @@ export async function runChallengeWallSmoke(page, baseUrl) {
   await page.clock.runFor(32);
   assert.equal(await page.locator('#expedition-building').textContent(), '城墙 ' + coords(wall) + ' · 42 HP');
   const beforeWave = state.economy.find((wave) => wave.waveId === 0);
-  assert.equal(beforeWave.miningIncome, 3.5);
+  assert.equal(beforeWave.miningIncome, 13.5);
+  assert.equal(beforeWave.technologySpend, 10);
   assert.equal(beforeWave.cardSpend, 3);
   assert.equal(state.economy.find((wave) => wave.waveId === 1).killIncome, 0);
 
@@ -248,6 +365,7 @@ export async function runChallengeWallSmoke(page, baseUrl) {
   return {
     seed, case: 'wall', miningIncomeBeforeWave: beforeWave.miningIncome, openingWaveBalance: beforeWave.balance,
     firstRewardMs: Math.round(openingTimes.firstRewardAt - run.start),
+    firstTechnologyMs: Math.round(openingTimes.technologyAt - run.start),
     firstAffordableMs: Math.round(openingTimes.firstAffordableAt - run.start),
     firstDefenseCardMs: Math.round(firstDefenseAt - run.start),
     firstThreatMs: Math.round(first.firstThreatAtMs), firstHitMs: Math.round(first.firstBuildingDamageAtMs),
@@ -258,17 +376,12 @@ export async function runChallengeWallSmoke(page, baseUrl) {
 export async function runChallengeTowerSmoke(page, baseUrl) {
   const seed = 512;
   const run = await openChallenge(page, baseUrl, seed);
-  const { game, layout } = run;
+  const { game } = run;
   await run.mineOpening();
   await run.draw('tower');
-  await game.walkTo(GENERATED_SPAWN, true);
-  const dirtRows = Array.from({ length: 29 }, (_, index) => 92 - index).filter((row) => layout[row][19] === '+');
-  assert.ok(dirtRows.length >= 6);
-  await game.openLineTo(cell(19, dirtRows[5]), true);
-  await game.walkTo(GENERATED_SPAWN, true);
-  assert.equal(await run.cash(), '3.0');
+  await run.mineTo(3);
   await run.draw('tower');
-  await game.walkVia(cell(21, 92), cell(21, 93), cell(22, 93));
+  await run.returnTo(cell(22, 93));
   await run.mine(cell(23, 93));
   await run.place('tower', cell(23, 93));
   await run.place('tower', cell(22, 92));
@@ -307,23 +420,14 @@ export async function runChallengeLossSmoke(page, baseUrl) {
 export async function runChallengePitySmoke(page, baseUrl) {
   const seed = 1091;
   const run = await openChallenge(page, baseUrl, seed);
-  const { game } = run;
   await run.attemptUnaffordableDraw();
   await run.mineOpening();
   await run.draw('economy');
   await run.attemptUnaffordableDraw();
 
-  await game.walkVia(GENERATED_SPAWN, cell(19, 84));
-  for (const col of [18, 17, 16, 15]) {
-    await game.walkTo(cell(col, 84), true);
-    await run.mine(cell(col, 83));
-  }
-  await game.walkTo(cell(19, 84), true);
-  await game.openLineTo(cell(19, 64), true);
-  assert.equal(await run.cash(), '9.0');
+  await run.mineTo(9);
   const second = await run.draw('economy');
-  const third = await run.draw();
-  assert.ok(third === 'wall' || third === 'tower', 'The third successful paid draw must cover the two economy draws');
+  const third = await run.draw('tower');
   const fourth = await run.draw('economy');
   assert.deepEqual(await readCardInventory(page), { ...emptyCards, economy: 3, [third]: 1 });
   assert.equal(await run.cash(), '0.0', 'The pity draw must not be free or refund its cost');
@@ -346,4 +450,57 @@ export async function runChallengePitySmoke(page, baseUrl) {
 
   return { seed, case: 'pity', draws: ['economy', second, third, fourth],
     newRoundRetainedChallenge: true };
+}
+
+export async function runChallengeTechnologyRelocationSmoke(page, baseUrl) {
+  const seed = 12;
+  const run = await openChallenge(page, baseUrl, seed);
+  await run.mineOpening();
+  const before = await readRound(page);
+  await run.mineTo(researchCost);
+  await run.researchTool();
+  await run.mineTo(technologyCost);
+  await run.returnTo(cell(19, 84));
+  if (await run.technology.isHidden()) await page.locator('#expedition-spawn').click();
+  const attack = await advanceUntil(page, (state) => state.buildingContacts > before.buildingContacts,
+    'An actual southern enemy must damage the exposed technology', 8_000);
+  assert.ok(attack.hp > 0);
+  assert.equal(await page.locator('#tool-level').textContent(), 'Lv.2', 'Loss of a facility must not reset researched tools');
+  assert.ok(await run.maker.isDisabled(), 'No facility means no card manufacture despite sufficient funds');
+  assert.equal(await page.locator('#card-draw-reason').textContent(), '科技设施已损毁');
+  assert.ok(await run.technology.isEnabled());
+  assert.deepEqual(await readCardInventory(page), emptyCards);
+  assert.equal(await run.cash(), '10.0');
+
+  run.occupied.delete(coords(firstTechnology));
+  const replacement = cell(18, 84);
+  await run.buildTechnology(replacement);
+  await run.returnTo(cell(19, 88));
+  await run.game.inspect(firstTechnology, '空地');
+  await page.clock.runFor(32);
+  assert.equal(await run.building.textContent(), '—');
+  assert.equal(await page.locator('#tool-level').textContent(), 'Lv.2');
+  assert.equal(await run.cash(), '0.0');
+  assert.deepEqual(await readCardInventory(page), emptyCards);
+  return { seed, oldSite: firstTechnology, replacement, attackWave: attack.wave, remainingHp: (await readRound(page)).hp };
+}
+
+export async function runChallengeVictorySmoke(page, baseUrl) {
+  const seed = 12;
+  const run = await openChallenge(page, baseUrl, seed);
+  await run.mineOpening();
+  await run.draw('wall');
+  const wall = cell(24, 94);
+  await run.returnTo(cell(23, 94));
+  await run.place('wall', wall);
+  await run.mineTo(researchCost);
+  await run.researchTool();
+  await run.returnTo(GENERATED_SPAWN);
+  const route = findDiggablePath([wall, firstTechnology]);
+  await followRoute(page, run.game, route);
+  assert.deepEqual(await run.game.position(), GENERATED_GOAL);
+  const victory = await readRound(page);
+  assert.equal(victory.phase, 'won');
+  assert.ok(victory.hp > 0);
+  return { seed, hp: victory.hp, wave: victory.wave, routeSteps: route.length - 1 };
 }

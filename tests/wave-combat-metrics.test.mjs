@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { DEFENSE_CONFIG, DefenseSimulation, enemyPosition } from "../src/defense-simulation.ts";
+import { generateExpeditionBiomes } from "../src/expedition-biomes.ts";
+import { ExpeditionEconomy } from "../src/expedition-economy.ts";
 import { ExpeditionRound } from "../src/expedition-round.ts";
+import { addExpeditionApproach, addExpeditionTiers } from "../src/expedition-terrain.ts";
+import { GENERATED_ENEMY_ENTRY, GENERATED_GOAL, generateExpeditionWorld } from "../src/generated-map.ts";
 import { TerrainMap } from "../src/terrain.ts";
 
 const cell = (col, row) => ({ col, row });
@@ -28,7 +32,7 @@ function fixture({ gate = false, offLane = [], onEvent, biomes } = {}) {
 function assertBalanced(simulation) {
   for (const wave of simulation.waveMetrics) {
     assert.equal(wave.planned, wave.spawned + wave.pending + wave.cancelledPending);
-    assert.equal(wave.spawned, wave.active + wave.buildingContacts + wave.playerContacts + wave.towerKills
+    assert.equal(wave.spawned, wave.active + wave.playerContacts + wave.towerKills
       + wave.wallImpacts + wave.cancelledActive);
     assert.equal(wave.active, [...simulation.enemies].filter((enemy) => enemy.waveId === wave.waveId).length);
     assert.ok(wave.threatened <= wave.spawned);
@@ -100,11 +104,16 @@ test("wall and non-wall damage are clipped, separated and reported with actual o
   simulation.requestWave(1, order(2, 9, 5, 8));
   simulation.step(1);
   simulation.step(DEFENSE_CONFIG.spawnIntervalMs);
-  simulation.step(2 * DEFENSE_CONFIG.travelMs);
+  simulation.step(DEFENSE_CONFIG.travelMs);
+  simulation.step(43);
+  assert.equal(simulation.getWaveMetrics(1).buildingDamage, 0);
+  simulation.step(1);
   const wave = simulation.getWaveMetrics(1);
-  assert.deepEqual(events.filter(({ event }) => event.type === "wallImpact" || event.type === "buildingHit")
-    .map(({ event, metadata }) => [event.type, event.damage, metadata.waveId, metadata.timeMs, metadata.cell]),
-  [["wallImpact", 2, 1, 1, wall.cell], ["buildingHit", 3, 1, 501, structure.cell]]);
+  const hits = events.filter(({ event }) => event.type === "wallImpact" || event.type === "buildingHit");
+  assert.deepEqual(hits.map(({ event, metadata }) => [event.type, event.damage, metadata.waveId, metadata.cell]),
+    [["wallImpact", 2, 1, wall.cell], ["buildingHit", 3, 1, structure.cell]]);
+  assert.equal(hits[0].metadata.timeMs, 1);
+  assert.ok(hits[1].metadata.timeMs > 394 && hits[1].metadata.timeMs <= 395);
   assert.equal(wave.firstBuildingDamageAtMs, 1);
   assert.equal(wave.wallImpacts, 1);
   assert.equal(wave.wallDamage, 2);
@@ -113,10 +122,71 @@ test("wall and non-wall damage are clipped, separated and reported with actual o
   assert.equal(wave.buildingDamage, 3);
   assert.equal(wave.buildingsDestroyed, 1);
   assert.equal(wave.towerKills, 0);
-  assert.equal(wave.settledAtMs, 501);
+  assert.equal(wave.active, 1);
+  assert.equal(wave.settledAtMs, null);
   simulation.finishAttackPhase(1);
-  assert.equal(simulation.getWaveMetrics(1).attackEndReason, "resolved");
+  assert.equal(simulation.getWaveMetrics(1).attackEndReason, "time-limit");
   assertBalanced(simulation);
+  simulation.clearBattle();
+  assert.equal(simulation.getWaveMetrics(1).cancelledActive, 1);
+  assert.equal(simulation.getWaveMetrics(1).settledAtMs, 395);
+  assertBalanced(simulation);
+});
+
+test("the first seeded wave destroys the initial facility but does not resolve any attackers", (t) => {
+  const world = generateExpeditionWorld(12);
+  const landscape = generateExpeditionBiomes(world.layout, world.effectiveSeed);
+  const layout = addExpeditionApproach(addExpeditionTiers(landscape.layout, world.effectiveSeed));
+  const map = new TerrainMap(layout, { biomes: landscape.biomes });
+  const facilitySite = cell(17, 90);
+  const economy = new ExpeditionEconomy(map, world.effectiveSeed, facilitySite);
+  const facility = map.getBuilding(facilitySite);
+  assert.equal(facility?.hp, 1);
+  const player = cell(22, 84);
+  assert.ok(map.isWalkable(player));
+  const round = new ExpeditionRound(true);
+  const events = [];
+  const simulation = new DefenseSimulation(map, GENERATED_ENEMY_ENTRY, GENERATED_GOAL, (event, metadata) => {
+    events.push({ event, metadata });
+    economy.handleEvent(event);
+    if (event.type === "playerHit") round.hitPlayer(event.damage);
+  }, true);
+
+  for (let frame = 0; frame < 300 && round.phase !== "recovering"; frame += 1) {
+    const previous = round.phase;
+    const { spawned, pending, removed } = simulation.spawnCounts;
+    const firstOrder = round.update(25, player.row, spawned - removed, pending);
+    if (firstOrder) {
+      assert.equal(round.wave, 1);
+      assert.equal(simulation.requestWave(round.wave, firstOrder), firstOrder.count);
+    }
+    if (previous === "attacking" && round.phase === "recovering") simulation.finishAttackPhase(round.wave);
+    simulation.step(25, player);
+  }
+
+  assert.equal(round.phase, "recovering");
+  assert.equal(round.wave, 1);
+  assert.equal(map.getBuilding(facilitySite), undefined);
+  const hits = events.filter(({ event }) => event.type === "buildingHit");
+  assert.deepEqual(hits.map(({ event, metadata }) =>
+    [event.buildingId, event.damage, event.destroyed, metadata.waveId]), [[facility.id, 1, true, 1]]);
+  assert.ok([...simulation.enemies].some(({ id }) => id === hits[0].event.enemyId));
+  const wave = simulation.getWaveMetrics(1);
+  const result = {
+    planned: wave.planned, spawned: wave.spawned, pending: wave.pending, active: wave.active,
+    buildingHits: wave.buildingContacts, buildingsDestroyed: wave.buildingsDestroyed,
+    wallImpacts: wave.wallImpacts, playerContacts: wave.playerContacts, towerKills: wave.towerKills,
+  };
+  assert.deepEqual(result, {
+    planned: 3, spawned: 3, pending: 0, active: 3,
+    buildingHits: 1, buildingsDestroyed: 1, wallImpacts: 0, playerContacts: 0, towerKills: 0,
+  });
+  assert.equal(wave.attackEndReason, "time-limit");
+  assert.equal(wave.settledAtMs, null);
+  assert.equal(simulation.spawnCounts.removed, 0);
+  assert.equal(economy.totals.killIncome, 0);
+  assertBalanced(simulation);
+  t.diagnostic("Seed 12, Baseline fast first wave: " + JSON.stringify(result));
 });
 
 test("a lethal player hit records applied HP before terminal cancellation, without attributing pending enemies as kills", () => {
@@ -131,13 +201,15 @@ test("a lethal player hit records applied HP before terminal cancellation, witho
   } });
   simulation.requestWave(1, order(3, 2, 1, 4));
   simulation.requestWave(2, order(2));
-  simulation.step(10, cell(3, 5));
+  simulation.step(74, cell(3, 5));
+  assert.equal(round.playerHp, 1, "An adjacent enemy must cover half a tile before contact");
+  simulation.step(1, cell(3, 5));
   simulation.step(500, cell(3, 5));
   assert.equal(round.phase, "lost");
   const [one, two] = simulation.waveMetrics;
-  assert.deepEqual([one.playerContacts, one.playerDamage, one.firstPlayerDamageAtMs, one.firstThreatAtMs], [1, 1, 10, 0]);
-  assert.deepEqual([one.attackEndReason, one.cancelledActive, one.cancelledPending, one.settledAtMs], ["terminal", 0, 2, 10]);
-  assert.deepEqual([two.attackEndReason, two.cancelledActive, two.cancelledPending, two.settledAtMs], ["terminal", 0, 2, 10]);
+  assert.deepEqual([one.playerContacts, one.playerDamage, one.firstPlayerDamageAtMs, one.firstThreatAtMs], [1, 1, 75, 0]);
+  assert.deepEqual([one.attackEndReason, one.cancelledActive, one.cancelledPending, one.settledAtMs], ["terminal", 0, 2, 75]);
+  assert.deepEqual([two.attackEndReason, two.cancelledActive, two.cancelledPending, two.settledAtMs], ["terminal", 0, 2, 75]);
   assert.equal(events.filter(({ event }) => event.type === "playerHit").length, 1);
   assertBalanced(simulation);
 });

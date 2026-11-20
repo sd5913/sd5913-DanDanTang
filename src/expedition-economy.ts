@@ -7,7 +7,8 @@ import type { GridPosition, TerrainMap } from "./terrain.ts";
 
 export const CARD_KINDS = Object.freeze(["wall", "tower", "economy"] as const);
 export type CardKind = typeof CARD_KINDS[number];
-export type CardDrawFailure = "technology-destroyed" | "insufficient-funds";
+export type CardDrawFailure = "technology-missing" | "technology-destroyed" | "insufficient-funds";
+export type TechnologyBuildFailure = "already-built" | "insufficient-funds";
 type CardCounts = Readonly<Record<CardKind, number>>;
 
 export interface EconomyTotals {
@@ -18,12 +19,13 @@ export interface EconomyTotals {
   readonly cardSpend: number;
   readonly researchSpend: number;
   readonly miningIncome?: number;
+  readonly technologySpend?: number;
 }
 
 function newTotals() {
   return {
     killIncomeTenths: 0, productionIncomeTenths: 0, cardsMade: 0,
-    cardSpendTenths: 0, researchSpendTenths: 0, miningIncomeTenths: 0,
+    cardSpendTenths: 0, researchSpendTenths: 0, miningIncomeTenths: 0, technologySpendTenths: 0,
   };
 }
 
@@ -45,17 +47,16 @@ export const ECONOMY_PROTOTYPE = Object.freeze({
   towerKillReward: 2,
   drawCost: 3,
   drawWeights: Object.freeze({ wall: 1, tower: 1, economy: 1 }),
-  buildingHp: Object.freeze({ wall: 50, tower: 6, economy: 6, technology: 10 }),
+  buildingHp: Object.freeze({ wall: 50, tower: 1, economy: 1, technology: 1 }),
   technologyCell: Object.freeze({ col: 17, row: 90 }),
 });
 
-export const TECHNOLOGY_PROTOTYPE = Object.freeze({ researchCost: 10 });
+export const TECHNOLOGY_PROTOTYPE = Object.freeze({ researchCost: DIFFICULTY_PROFILES.baseline.economy.researchCost });
 
 const DRAW_SALT = 0x9e37_79b9;
 const DEFENSE_DRAW_SALT = 0xa511_e9b3;
 const DRAW_WEIGHT = CARD_KINDS.reduce((total, kind) => total + ECONOMY_PROTOTYPE.drawWeights[kind], 0);
 const DRAW_COST_TENTHS = toEconomyTenths(ECONOMY_PROTOTYPE.drawCost);
-const RESEARCH_COST_TENTHS = toEconomyTenths(TECHNOLOGY_PROTOTYPE.researchCost);
 
 function nextDrawState(state: number): number {
   return (Math.imul(state, 1_664_525) + 1_013_904_223) >>> 0;
@@ -65,8 +66,9 @@ export class ExpeditionEconomy {
   readonly #map: TerrainMap;
   readonly #initialDrawState: number;
   readonly #initialDefenseDrawState: number;
-  readonly #technologyCell: GridPosition;
+  readonly #fixedTechnologyCell: GridPosition;
   readonly #rules: DifficultyEconomy;
+  #builtTechnology?: Building;
   #toolLevel: 1 | 2 = 1;
   #balanceTenths = 0;
   #cards: CardCounts = ECONOMY_PROTOTYPE.initialCards;
@@ -84,7 +86,7 @@ export class ExpeditionEconomy {
     this.#rules = DIFFICULTY_PROFILES[difficulty].economy;
     this.#initialDrawState = (seed ^ DRAW_SALT) >>> 0;
     this.#initialDefenseDrawState = (seed ^ DEFENSE_DRAW_SALT) >>> 0;
-    this.#technologyCell = Object.freeze({ ...technologyCell });
+    this.#fixedTechnologyCell = Object.freeze({ ...technologyCell });
     this.reset();
   }
 
@@ -102,6 +104,8 @@ export class ExpeditionEconomy {
       researchSpend: fromEconomyTenths(this.#totals.researchSpendTenths),
       ...(this.#rules.miningIncomeTenthsPerHp > 0
         ? { miningIncome: fromEconomyTenths(this.#totals.miningIncomeTenths) } : {}),
+      ...(this.technologyBuildCost === undefined
+        ? {} : { technologySpend: fromEconomyTenths(this.#totals.technologySpendTenths) }),
     };
   }
 
@@ -109,8 +113,14 @@ export class ExpeditionEconomy {
     return this.#cards;
   }
 
-  get technologyCell(): GridPosition {
-    return this.#technologyCell;
+  get technologyBuildCost(): number | undefined { return this.#rules.technologyBuildCost; }
+
+  get researchCost(): number { return this.#rules.researchCost; }
+
+  get technologyCell(): GridPosition | undefined {
+    if (this.technologyBuildCost === undefined) return this.#fixedTechnologyCell;
+    const building = this.#builtTechnology;
+    return building && this.#map.getBuilding(building.cell)?.id === building.id ? building.cell : undefined;
   }
 
   get toolLevel(): 1 | 2 {
@@ -118,7 +128,8 @@ export class ExpeditionEconomy {
   }
 
   get hasTechnology(): boolean {
-    return this.#map.getBuilding(this.#technologyCell)?.kind === "technology";
+    const cell = this.technologyCell;
+    return cell !== undefined && this.#map.getBuilding(cell)?.kind === "technology";
   }
 
   handleEvent(event: DefenseEvent): number {
@@ -156,7 +167,9 @@ export class ExpeditionEconomy {
   }
 
   get drawFailure(): CardDrawFailure | undefined {
-    if (!this.hasTechnology) return "technology-destroyed";
+    if (!this.hasTechnology) {
+      return this.technologyBuildCost !== undefined && !this.#builtTechnology ? "technology-missing" : "technology-destroyed";
+    }
     return this.#balanceTenths < DRAW_COST_TENTHS ? "insufficient-funds" : undefined;
   }
 
@@ -184,27 +197,54 @@ export class ExpeditionEconomy {
 
   placeCard(kind: CardKind, cell: GridPosition): Building | undefined {
     if (!CARD_KINDS.includes(kind) || this.#cards[kind] <= 0) return undefined;
-    if (cell.col === this.#technologyCell.col && cell.row === this.#technologyCell.row) return undefined;
+    const technology = this.technologyCell;
+    if (technology && cell.col === technology.col && cell.row === technology.row) return undefined;
     const building = this.#map.placeBuilding(kind, cell, ECONOMY_PROTOTYPE.buildingHp[kind]);
     if (building) this.updateCards(kind, -1);
     return building;
   }
 
   researchTool(): boolean {
-    if (this.#toolLevel === 2 || !this.hasTechnology || this.#balanceTenths < RESEARCH_COST_TENTHS) return false;
-    this.#balanceTenths -= RESEARCH_COST_TENTHS;
-    this.#totals.researchSpendTenths += RESEARCH_COST_TENTHS;
+    const cost = toEconomyTenths(this.researchCost);
+    if (this.#toolLevel === 2 || !this.hasTechnology || this.#balanceTenths < cost) return false;
+    this.#balanceTenths -= cost;
+    this.#totals.researchSpendTenths += cost;
     this.#toolLevel = 2;
     return true;
   }
 
+  get technologyFailure(): TechnologyBuildFailure | undefined {
+    const cost = this.technologyBuildCost;
+    if (cost === undefined) return undefined;
+    if (this.hasTechnology) return "already-built";
+    return this.#balanceTenths < toEconomyTenths(cost) ? "insufficient-funds" : undefined;
+  }
+
+  buildTechnology(cell: GridPosition): Building | undefined {
+    const cost = this.technologyBuildCost;
+    if (cost === undefined || this.technologyFailure) return undefined;
+    const building = this.#map.placeBuilding("technology", cell, ECONOMY_PROTOTYPE.buildingHp.technology);
+    if (!building) return undefined;
+    this.#builtTechnology = building;
+    const costTenths = toEconomyTenths(cost);
+    this.#balanceTenths -= costTenths;
+    this.#totals.technologySpendTenths += costTenths;
+    return building;
+  }
+
   rebuildTechnology(): Building | undefined {
-    return this.#map.placeBuilding("technology", this.#technologyCell, ECONOMY_PROTOTYPE.buildingHp.technology);
+    if (this.technologyBuildCost !== undefined) return undefined;
+    return this.#map.placeBuilding("technology", this.#fixedTechnologyCell, ECONOMY_PROTOTYPE.buildingHp.technology);
   }
 
   reset(): void {
-    const cell = this.#technologyCell;
-    if (!this.rebuildTechnology()) {
+    const built = this.#builtTechnology;
+    if (built) {
+      this.#map.removeBuilding(built.cell, built.id);
+      this.#builtTechnology = undefined;
+    }
+    if (this.technologyBuildCost === undefined && !this.rebuildTechnology()) {
+      const cell = this.#fixedTechnologyCell;
       throw new Error(`Cannot place the technology facility at (${cell.col}, ${cell.row})`);
     }
     this.#toolLevel = 1;

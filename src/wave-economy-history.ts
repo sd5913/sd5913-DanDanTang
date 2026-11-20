@@ -23,6 +23,7 @@ function totalsInTenths(totals: EconomyTotals) {
     cardSpend: toEconomyTenths(totals.cardSpend),
     researchSpend: toEconomyTenths(totals.researchSpend),
     miningIncome: totals.miningIncome === undefined ? undefined : toEconomyTenths(totals.miningIncome),
+    technologySpend: totals.technologySpend === undefined ? undefined : toEconomyTenths(totals.technologySpend),
   };
 }
 
@@ -66,6 +67,8 @@ export class WaveEconomyHistory {
         researchSpend: fromEconomyTenths(closing.researchSpend - opening.researchSpend),
         ...(closing.miningIncome === undefined
           ? {} : { miningIncome: fromEconomyTenths(closing.miningIncome - (opening.miningIncome ?? 0)) }),
+        ...(closing.technologySpend === undefined
+          ? {} : { technologySpend: fromEconomyTenths(closing.technologySpend - (opening.technologySpend ?? 0)) }),
       };
     });
   }

@@ -2,7 +2,11 @@ import { EnemyNavigation } from "./enemy-navigation.ts";
 import type { NavigationAction } from "./enemy-navigation.ts";
 import { BIOME_PROTOTYPE } from "./biome-effects.ts";
 import type { Building, BuildingKind } from "./buildings.ts";
+import { boxDistance, ENEMY_RADIUS, sweepPlayerContact } from "./enemy-contact.ts";
+import type { PlayerContact } from "./enemy-contact.ts";
 import type { WaveOrder } from "./expedition-round.ts";
+import { cellCenter, TILE_SIZE, worldToCell } from "./player.ts";
+import type { Point } from "./player.ts";
 import type { GridPosition, TerrainMap } from "./terrain.ts";
 import { WaveCombatMetrics } from "./wave-combat-metrics.ts";
 import type { AttackEndReason, TowerExposureAnchor, WaveCombatSnapshot } from "./wave-combat-metrics.ts";
@@ -26,6 +30,8 @@ const DEFAULT_ENEMY_PROFILE: EnemyProfile = { hp: DEFENSE_CONFIG.enemyHp, contac
 
 interface EnemyMove {
   readonly to: GridPosition;
+  readonly end: Point;
+  readonly durationMs: number;
   elapsedMs: number;
 }
 
@@ -34,6 +40,7 @@ export interface EnemyState {
   readonly spawnedAtMs: number;
   readonly waveId?: number;
   cell: GridPosition;
+  point: Point;
   hp: number;
   readonly wallDamage: number;
   readonly contactDamage: number;
@@ -52,6 +59,11 @@ interface Target {
 interface Position {
   readonly x: number;
   readonly y: number;
+}
+
+interface PlayerTarget {
+  readonly cell: GridPosition;
+  readonly position: Point;
 }
 
 interface SpawnRequest {
@@ -75,6 +87,11 @@ export interface DefenseEventMetadata {
   readonly waveId?: number;
   readonly timeMs: number;
   readonly cell?: GridPosition;
+  readonly contact?: PlayerContact & {
+    readonly enemyCell: GridPosition;
+    readonly navigationTarget?: string;
+    readonly source: "enemy-body-contact";
+  };
 }
 
 type DefenseEmitter = (event: DefenseEvent, metadata: DefenseEventMetadata) => void;
@@ -92,11 +109,16 @@ export function sameCell(a: GridPosition, b: GridPosition): boolean {
 }
 
 export function enemyPosition(enemy: Readonly<EnemyState>): Position {
-  const { cell, move } = enemy;
-  const progress = move ? move.elapsedMs / DEFENSE_CONFIG.travelMs : 0;
+  const { x, y } = enemyWorldPosition(enemy);
+  return { x: x / TILE_SIZE, y: y / TILE_SIZE };
+}
+
+export function enemyWorldPosition({ point, move }: Readonly<EnemyState>): Point {
+  if (!move) return point;
+  const progress = move.elapsedMs / move.durationMs;
   return {
-    x: cell.col + 0.5 + (move ? (move.to.col - cell.col) * progress : 0),
-    y: cell.row + 0.5 + (move ? (move.to.row - cell.row) * progress : 0),
+    x: point.x + (move.end.x - point.x) * progress,
+    y: point.y + (move.end.y - point.y) * progress,
   };
 }
 
@@ -220,20 +242,22 @@ export class DefenseSimulation {
     this.waveCombat.reset();
   }
 
-  step(deltaMs: number, player?: GridPosition): void {
+  step(deltaMs: number, player?: GridPosition | PlayerTarget): void {
     if (!Number.isFinite(deltaMs) || deltaMs <= 0) return;
+    const target = player && ("position" in player ? player : { cell: player, position: cellCenter(player) });
     this.timeMs += deltaMs;
-    for (const enemy of this.units.values()) this.advanceEnemy(enemy, deltaMs, player);
+    for (const enemy of this.units.values()) this.advanceEnemy(enemy, deltaMs, target);
     for (const building of this.map.getBuildings()) {
       if (building.kind === "tower") this.fireTower(building);
     }
-    this.releaseSpawn(player);
+    this.releaseSpawn(target?.cell);
   }
 
   private addEnemy(wallDamage: number, profile: EnemyProfile, waveId?: number, player?: GridPosition): void {
     const id = this.nextEnemyId++;
     const enemy: EnemyState = {
-      id, spawnedAtMs: this.timeMs, cell: this.entry, hp: profile.hp, wallDamage, contactDamage: profile.contactDamage,
+      id, spawnedAtMs: this.timeMs, cell: this.entry, point: cellCenter(this.entry),
+      hp: profile.hp, wallDamage, contactDamage: profile.contactDamage,
       unreachable: false, contacted: false,
       ...(waveId === undefined ? {} : { waveId }),
     };
@@ -258,27 +282,36 @@ export class DefenseSimulation {
     this.nextSpawnAtMs = this.timeMs + DEFENSE_CONFIG.spawnIntervalMs;
   }
 
-  private advanceEnemy(enemy: EnemyState, deltaMs: number, player?: GridPosition): void {
+  private advanceEnemy(enemy: EnemyState, deltaMs: number, player?: PlayerTarget): void {
     let budget = deltaMs;
-    if (this.needsPositionSample(enemy)) this.samplePosition(enemy, enemyPosition(enemy), this.timeMs - budget, 0, player);
+    if (this.needsPositionSample(enemy)) this.samplePosition(enemy, enemyPosition(enemy), this.timeMs - budget, 0, player?.cell);
     while (budget > 0) {
       if (enemy.move && !this.map.isWalkable(enemy.move.to)) enemy.move = undefined;
-      if (enemy.move) {
-        const left = DEFENSE_CONFIG.travelMs - enemy.move.elapsedMs;
-        const previous = this.needsPositionSample(enemy) ? enemyPosition(enemy) : undefined;
+      const move = enemy.move;
+      if (move) {
+        const duration = Math.min(budget, move.durationMs - move.elapsedMs);
+        const sample = this.needsPositionSample(enemy) ? enemyPosition(enemy) : undefined;
+        const previous = this.expeditionCombat && player ? enemyWorldPosition(enemy) : undefined;
         const start = this.timeMs - budget;
-        if (budget < left) {
-          enemy.move.elapsedMs += budget;
-          if (previous) this.samplePosition(enemy, previous, start, budget, player);
+        move.elapsedMs += duration;
+        const contact = previous && player && this.playerContact(previous, enemyWorldPosition(enemy), player);
+        if (contact && player) {
+          enemy.point = contact.enemyWorld;
+          enemy.move = undefined;
+          const elapsed = duration * contact.progress;
+          if (sample) this.samplePosition(enemy, sample, start, elapsed, player.cell);
+          this.hitPlayer(enemy, player.cell, contact, start + elapsed);
           return;
         }
-        enemy.cell = enemy.move.to;
+        if (sample) this.samplePosition(enemy, sample, start, duration, player?.cell);
+        if (move.elapsedMs < move.durationMs) return;
+        enemy.cell = move.to;
+        enemy.point = move.end;
         enemy.move = undefined;
-        budget -= left;
-        if (previous) this.samplePosition(enemy, previous, start, left, player);
+        budget -= duration;
       }
 
-      const { target, action } = this.chooseAction(enemy.cell, player);
+      const { target, action } = this.chooseAction(enemy.cell, player?.cell);
       const key = target.buildingId ?? `${target.kind}:${target.cell.col},${target.cell.row}`;
       if (enemy.targetKey !== key) {
         enemy.targetKey = key;
@@ -288,14 +321,62 @@ export class DefenseSimulation {
       }
 
       enemy.unreachable = action.kind === "unreachable";
+      if (this.expeditionCombat && target.kind === "player" && player) {
+        const contact = this.playerContact(enemy.point, enemy.point, player);
+        if (contact) {
+          this.hitPlayer(enemy, player.cell, contact, this.timeMs - budget);
+          return;
+        }
+        if (action.kind === "arrived") {
+          // The shared route field ends next to its target so buildings stay solid.
+          // A walkable player target can be approached past that boundary.
+          this.startMove(enemy, player.cell, sameCell(enemy.cell, player.cell) ? player.position : cellCenter(player.cell));
+          continue;
+        }
+      }
       if (action.kind === "move") {
-        enemy.move = { to: action.cell, elapsedMs: 0 };
+        this.startMove(enemy, action.cell, cellCenter(action.cell));
         continue;
       }
       if (action.kind === "wall") this.impactWall(enemy, action.cell, action.wallId);
+      if (this.expeditionCombat && action.kind === "arrived" && target.buildingId && !enemy.contacted) {
+        const center = cellCenter(target.cell);
+        if (boxDistance(enemy.point, center, TILE_SIZE / 2) > ENEMY_RADIUS) {
+          const reach = TILE_SIZE / 2 + ENEMY_RADIUS;
+          this.startMove(enemy, enemy.cell, {
+            x: center.x + (enemy.cell.col - target.cell.col) * reach,
+            y: center.y + (enemy.cell.row - target.cell.row) * reach,
+          });
+          continue;
+        }
+        this.hitBuilding(enemy, target.cell, target.buildingId);
+        return;
+      }
       if (action.kind === "arrived" && !enemy.contacted) this.contact(enemy, target);
       return;
     }
+  }
+
+  private startMove(enemy: EnemyState, to: GridPosition, end: Point): void {
+    const distance = Math.hypot(end.x - enemy.point.x, end.y - enemy.point.y);
+    enemy.move = { to, end, durationMs: distance / TILE_SIZE * DEFENSE_CONFIG.travelMs, elapsedMs: 0 };
+  }
+
+  private playerContact(start: Point, end: Point, player: PlayerTarget): PlayerContact | undefined {
+    const contact = sweepPlayerContact(start, end, player.position);
+    if (!contact) return;
+    const { x, y } = contact.enemyWorld;
+    return this.hasPlayerSight(worldToCell(x, y), player.cell) ? contact : undefined;
+  }
+
+  private hitPlayer(enemy: EnemyState, cell: GridPosition, contact: PlayerContact, timeMs: number): void {
+    this.units.delete(enemy.id);
+    this.counts.playerContacts += 1;
+    this.waveCombat.resolve(enemy.id, "playerContacts", timeMs);
+    this.emit({ type: "playerHit", enemyId: enemy.id, damage: enemy.contactDamage }, {
+      waveId: enemy.waveId, timeMs, cell,
+      contact: { ...contact, enemyCell: enemy.cell, navigationTarget: enemy.targetKey, source: "enemy-body-contact" },
+    });
   }
 
   private needsPositionSample(enemy: EnemyState): boolean {
@@ -395,30 +476,22 @@ export class DefenseSimulation {
   }
 
   private contact(enemy: EnemyState, target: Target): void {
-    if (this.expeditionCombat && target.kind === "player") {
-      this.units.delete(enemy.id);
-      this.counts.playerContacts += 1;
-      this.waveCombat.resolve(enemy.id, "playerContacts", this.timeMs);
-      this.emitFor(enemy, { type: "playerHit", enemyId: enemy.id, damage: enemy.contactDamage }, target.cell);
-      return;
-    }
-    if (this.expeditionCombat && target.buildingId) {
-      const impact = this.map.damageBuilding(target.cell, target.buildingId, enemy.contactDamage);
-      if (!impact) return;
-      this.units.delete(enemy.id);
-      this.counts.buildingContacts += 1;
-      this.waveCombat.resolve(enemy.id, "buildingContacts", this.timeMs, impact.damage, impact.destroyed);
-      this.emitFor(enemy, { type: "buildingHit", enemyId: enemy.id, buildingId: impact.building.id,
-        buildingKind: impact.building.kind, cell: impact.building.cell, damage: impact.damage,
-        hp: impact.hp, destroyed: impact.destroyed }, impact.building.cell);
-      return;
-    }
-
     enemy.contacted = true;
+    if (this.expeditionCombat) return;
     const type = target.kind === "player" ? "playerContact" : "buildingContact";
     if (type === "playerContact") this.counts.playerContacts += 1;
     else this.counts.buildingContacts += 1;
     this.emitFor(enemy, { type, enemyId: enemy.id, target: target.cell }, target.cell);
+  }
+
+  private hitBuilding(enemy: EnemyState, cell: GridPosition, buildingId: string): void {
+    const impact = this.map.damageBuilding(cell, buildingId, enemy.contactDamage);
+    if (!impact) return;
+    enemy.contacted = true;
+    this.counts.buildingContacts += 1;
+    this.waveCombat.recordBuildingHit(enemy.id, this.timeMs, impact.damage, impact.destroyed);
+    this.emitFor(enemy, { type: "buildingHit", enemyId: enemy.id, buildingId: impact.building.id,
+      buildingKind: impact.building.kind, cell, damage: impact.damage, hp: impact.hp, destroyed: impact.destroyed }, cell);
   }
 
   private impactWall(enemy: EnemyState, cell: GridPosition, wallId: string): void {

@@ -49,7 +49,7 @@ test("the default wide map starts with deterministic inventory and a working tec
   assert.equal(economy.hasTechnology, true);
   const tech = map.getBuilding(ECONOMY_PROTOTYPE.technologyCell);
   assert.equal(tech.kind, "technology");
-  assert.equal(tech.hp, 10);
+  assert.equal(tech.hp, 1);
   assert.equal(map.isWalkable(tech.cell), false);
   assert.throws(() => new ExpeditionEconomy(map, seed, cell(0, 0)), /technology facility at \(0, 0\)/);
 });

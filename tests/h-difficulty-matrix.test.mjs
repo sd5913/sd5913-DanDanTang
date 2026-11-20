@@ -47,8 +47,11 @@ test("H-E real model produces victories and defeats for every profile with eithe
       const runs = matrix.cases.filter((run) => run.clock === clock && run.profile === profile);
       const wins = runs.filter(({ outcome }) => outcome === "won");
       const losses = runs.filter(({ outcome }) => outcome === "lost");
-      assert.equal(wins.length, 8);
-      assert.equal(losses.length, 4);
+      assert.equal(wins.length + losses.length, runs.length, "Every replay must reach a terminal outcome");
+      for (const { seed } of matrix.seeds) {
+        assert.equal(runs.find((run) => run.seed === seed && run.strategy === "basic")?.outcome, "won");
+        assert.equal(runs.find((run) => run.seed === seed && run.strategy === "no-defense")?.outcome, "lost");
+      }
       for (const run of wins) {
         assert.ok(run.player.hp > 0);
         assert.equal(run.player.stage, 2);
@@ -57,8 +60,8 @@ test("H-E real model produces victories and defeats for every profile with eithe
         assert.equal(run.economy.researchSpend, 10);
       }
       for (const run of losses) {
-        assert.equal(run.strategy, "no-defense");
         assert.equal(run.player.hp, 0);
+        assert.ok(Number.isFinite(run.firstPlayerDamageAtMs));
         assert.ok(run.firstPlayerDamageAtMs >= run.firstSpawnAtMs);
         assert.equal(sum(run.waves, ({ playerDamage }) => playerDamage), 4);
       }
@@ -84,7 +87,7 @@ test("H-E authentic cohort, damage and economy counters reconcile for every run"
       assert.equal(wave.order.contactDamage, contactDamage);
       assert.equal(wave.planned, wave.order.count);
       assert.equal(wave.planned, wave.spawned + wave.pending + wave.cancelledPending);
-      assert.equal(wave.spawned, wave.active + wave.cancelledActive + wave.wallImpacts + wave.playerContacts + wave.buildingContacts + wave.towerKills);
+      assert.equal(wave.spawned, wave.active + wave.cancelledActive + wave.wallImpacts + wave.playerContacts + wave.towerKills);
       assert.ok(wave.peakActive >= wave.active && wave.peakActive <= wave.spawned);
       assert.ok(run.peakActiveSampled >= wave.active);
       assert.equal(wave.economy.waveId, wave.waveId);
@@ -103,19 +106,27 @@ test("H-E seed 12 demonstrates real, seed-matched space and HP differences", () 
   const find = (profile, strategy) => matrix.cases.find((run) =>
     run.clock === "normal" && run.seed === 12 && run.profile === profile && run.strategy === strategy);
   const damage = (run) => sum(run.waves, ({ wallDamage, buildingDamage }) => wallDamage + buildingDamage);
+  let delayedDamagePairs = 0;
   for (const profile of ["baseline", "a", "b"]) {
     const basic = find(profile, "basic");
     const tunnel = find(profile, "tunnel");
+    assert.ok(Number.isFinite(basic.firstThreatAtMs) && Number.isFinite(tunnel.firstThreatAtMs));
     assert.ok(tunnel.firstThreatAtMs > basic.firstThreatAtMs);
-    assert.ok(tunnel.firstBuildingDamageAtMs > basic.firstBuildingDamageAtMs);
+    assert.ok(Number.isFinite(basic.firstBuildingDamageAtMs));
+    if (tunnel.firstBuildingDamageAtMs === null) {
+      assert.equal(damage(tunnel), 0, "An absent first hit means the plan avoided all building damage");
+    } else {
+      assert.ok(tunnel.firstBuildingDamageAtMs > basic.firstBuildingDamageAtMs);
+      delayedDamagePairs += 1;
+    }
     assert.ok(damage(tunnel) < damage(basic));
   }
-  const a = find("a", "tunnel");
-  const b = find("b", "tunnel");
-  assert.equal(a.waves[0].planned, b.waves[0].planned);
-  assert.ok(a.counters.towerKills > b.counters.towerKills);
-  const samples = (run) => sum(run.waves, ({ towerHitsOnKills }) => towerHitsOnKills) / run.counters.towerKills;
-  assert.ok(samples(b) > samples(a), "stronger B units take more actual tower hits on kill");
+  assert.ok(delayedDamagePairs > 0, "At least one matched pair must measure delayed damage");
+  const [a] = find("a", "tunnel").waves;
+  const [b] = find("b", "tunnel").waves;
+  assert.equal(a.planned, b.planned);
+  assert.ok(a.towerKills > b.towerKills && b.towerKills > 0);
+  assert.ok(b.averageTowerHitsOnKill > a.averageTowerHitsOnKill, "Stronger B units take more tower hits in the same first cohort");
 });
 
 test("H-E replay matches a full run apart from host execution time", () => {

@@ -44,7 +44,7 @@ export interface WaveCombatSnapshot {
 
 type WaveTotals = Omit<WaveCombatSnapshot, "averageTowerHitsOnKill" | "averageTowerExposureToKillMs">;
 type WaveState = { -readonly [Key in keyof WaveTotals]: WaveTotals[Key] };
-type Resolution = "buildingContacts" | "playerContacts" | "towerKills" | "wallImpacts";
+type Resolution = "playerContacts" | "towerKills" | "wallImpacts";
 
 interface UnitSample {
   readonly wave: WaveState;
@@ -181,10 +181,9 @@ export class WaveCombatMetrics {
     this.units.delete(enemyId);
     wave.active -= 1;
     wave[outcome] += 1;
-    if (outcome === "wallImpacts" || outcome === "buildingContacts") {
-      const field = outcome === "wallImpacts" ? "wallDamage" : "buildingDamage";
-      wave[field] += damage;
-      if (destroyed) wave[outcome === "wallImpacts" ? "wallsDestroyed" : "buildingsDestroyed"] += 1;
+    if (outcome === "wallImpacts") {
+      wave.wallDamage += damage;
+      if (destroyed) wave.wallsDestroyed += 1;
       wave.firstBuildingDamageAtMs = earlier(wave.firstBuildingDamageAtMs, timeMs);
     }
     if (outcome === "towerKills") {
@@ -195,6 +194,16 @@ export class WaveCombatMetrics {
       }
     }
     this.settle(wave, timeMs);
+  }
+
+  recordBuildingHit(enemyId: number, timeMs: number, damage: number, destroyed: boolean): void {
+    const unit = this.units.get(enemyId);
+    if (!unit) return;
+    const { wave } = unit;
+    wave.buildingContacts += 1;
+    wave.buildingDamage += damage;
+    if (destroyed) wave.buildingsDestroyed += 1;
+    wave.firstBuildingDamageAtMs = earlier(wave.firstBuildingDamageAtMs, timeMs);
   }
 
   recordPlayerDamage(waveId: number, damage: number, timeMs: number): void {

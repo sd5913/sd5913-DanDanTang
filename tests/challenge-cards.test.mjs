@@ -37,20 +37,26 @@ function fixture(seed, difficulty = "challenge") {
     return card;
   }
 
+  function buyTechnology() {
+    mine(economy.technologyBuildCost / 0.5);
+    assert.ok(economy.buildTechnology(technology));
+  }
+
   function reset() {
     map.reset();
     economy.reset();
     minedTiles = 0;
   }
 
-  return { map, economy, mine, payAndDraw, reset };
+  return { map, economy, mine, buyTechnology, payAndDraw, reset };
 }
 
 test("Challenge can force either defense on the third paid draw and resumes the ordinary sequence", () => {
   for (const [seed, guarantee] of [[1091, "tower"], [1092, "wall"]]) {
-    const { economy, payAndDraw } = fixture(seed);
+    const { economy, buyTechnology, payAndDraw } = fixture(seed);
     assert.equal(economy.balance, 0);
     assert.deepEqual(economy.cards, { wall: 0, tower: 0, economy: 0 });
+    buyTechnology();
 
     for (const [index, expected] of ["economy", "economy", guarantee, "economy", "tower"].entries()) {
       assert.equal(payAndDraw(), expected);
@@ -62,10 +68,13 @@ test("Challenge can force either defense on the third paid draw and resumes the 
   }
 });
 
-test("insufficient funds or a destroyed facility cannot advance the guaranteed draw", () => {
-  const { map, economy, mine, payAndDraw } = fixture(1091);
+test("insufficient funds or absent or destroyed technology cannot advance the guaranteed draw", () => {
+  const { map, economy, mine, buyTechnology, payAndDraw } = fixture(1091);
   const control = fixture(1091);
   const actual = [];
+  assert.equal(economy.drawFailure, "technology-missing");
+  assert.equal(economy.drawCard(), undefined);
+  buyTechnology();
   assert.equal(economy.drawFailure, "insufficient-funds");
   assert.equal(economy.drawCard(), undefined);
   actual.push(payAndDraw(), payAndDraw());
@@ -79,15 +88,18 @@ test("insufficient funds or a destroyed facility cannot advance the guaranteed d
   assert.equal(economy.balance, 3);
   assert.equal(economy.totals.cardSpend, 6);
   assert.equal(economy.totals.cardsMade, 2);
-  assert.ok(economy.rebuildTechnology());
+  assert.equal(economy.rebuildTechnology(), undefined);
+  buyTechnology();
   actual.push(economy.drawCard(), payAndDraw(), payAndDraw());
 
   assert.equal(actual[2], "tower");
+  control.buyTechnology();
   assert.deepEqual(actual, Array.from({ length: 5 }, control.payAndDraw));
 });
 
 test("placing an earlier defense still qualifies as having drawn defense", () => {
-  const { economy, payAndDraw } = fixture(14);
+  const { economy, buyTechnology, payAndDraw } = fixture(14);
+  buyTechnology();
   assert.equal(payAndDraw(), "wall");
   assert.ok(economy.placeCard("wall", wallSite));
   assert.equal(economy.cards.wall, 0);
@@ -96,11 +108,14 @@ test("placing an earlier defense still qualifies as having drawn defense", () =>
 
 test("restarting restores the guarantee and regular draws for the same seed", () => {
   const round = fixture(1092);
-  const drawFive = () => Array.from({ length: 5 }, round.payAndDraw);
+  const drawFive = () => {
+    round.buyTechnology();
+    return Array.from({ length: 5 }, round.payAndDraw);
+  };
   const expected = ["economy", "economy", "wall", "economy", "tower"];
   assert.deepEqual(drawFive(), expected);
   round.reset();
-  assert.equal(round.economy.hasTechnology, true);
+  assert.equal(round.economy.hasTechnology, false);
   assert.equal(round.economy.totals.cardsMade, 0);
   assert.deepEqual(round.economy.cards, { wall: 0, tower: 0, economy: 0 });
   assert.deepEqual(drawFive(), expected);
@@ -109,7 +124,8 @@ test("restarting restores the guarantee and regular draws for the same seed", ()
 test("each sampled Challenge seed draws legal defense within three purchases", () => {
   const seeds = [0, 1, 12, 1090, 1091, 1092, 1096, 1117, 1122, 20_261_120, 0xffff_ffff];
   for (const seed of seeds) {
-    const { economy, payAndDraw } = fixture(seed);
+    const { economy, buyTechnology, payAndDraw } = fixture(seed);
+    buyTechnology();
     const cards = Array.from({ length: 3 }, payAndDraw);
     assert.ok(cards.some((card) => card === "wall" || card === "tower"), "seed " + seed);
     assert.ok(cards.every((card) => card === "economy" || card === "wall" || card === "tower"));
@@ -119,14 +135,16 @@ test("each sampled Challenge seed draws legal defense within three purchases", (
 });
 
 test("research is still a direct technology purchase and does not count as a card draw", () => {
-  const { economy, mine, payAndDraw } = fixture(1091);
-  mine(19);
+  const { economy, mine, buyTechnology, payAndDraw } = fixture(1091);
+  buyTechnology();
+  mine(39);
   assert.equal(economy.researchTool(), false);
   mine(1);
   assert.equal(economy.researchTool(), true);
   assert.equal(economy.toolLevel, 2);
   assert.equal(economy.balance, 0);
-  assert.equal(economy.totals.researchSpend, 10);
+  assert.equal(economy.totals.researchSpend, 20);
+  assert.equal(economy.totals.technologySpend, 10);
   assert.equal(economy.totals.cardsMade, 0);
   assert.deepEqual(Array.from({ length: 3 }, payAndDraw), ["economy", "economy", "tower"]);
 });

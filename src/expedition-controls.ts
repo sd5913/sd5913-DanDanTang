@@ -3,8 +3,8 @@ import type { BuildingKind } from "./buildings.ts";
 import { BIOME_NAMES } from "./biome-effects.ts";
 import type { PlacementFailure, PlacementPreview } from "./build-placement.ts";
 import type { BiomeId } from "./expedition-biomes.ts";
-import { CARD_KINDS, ECONOMY_PROTOTYPE, ExpeditionEconomy, TECHNOLOGY_PROTOTYPE } from "./expedition-economy.ts";
-import type { CardDrawFailure, CardKind } from "./expedition-economy.ts";
+import { CARD_KINDS, ECONOMY_PROTOTYPE, ExpeditionEconomy } from "./expedition-economy.ts";
+import type { CardDrawFailure, CardKind, TechnologyBuildFailure } from "./expedition-economy.ts";
 import type { ExpeditionPhase, ExpeditionRound } from "./expedition-round.ts";
 import type { GridPosition, TerrainMap } from "./terrain.ts";
 
@@ -28,16 +28,21 @@ const PHASE_NAMES: Record<ExpeditionPhase, string> = {
 };
 
 const CARD_DRAW_FEEDBACK_MS = 1_750;
-const CHALLENGE_OPENING_HINT = "挖掘地形获得经济，使用科技设施制造建筑卡。";
+const CHALLENGE_OPENING_HINT = "挖掘地形获得经济，先建造科技设施，再制造建筑卡。";
 const FIRST_CARD_READY_HINT = "已可制造第一张建筑卡";
 const CARD_SYMBOLS: Record<CardKind, string> = { wall: "▦", tower: "▲", economy: "◆" };
 const DRAW_FAILURE_LABELS: Record<CardDrawFailure | "round-ended", string> = {
+  "technology-missing": "请先建造科技设施",
   "technology-destroyed": "科技设施已损毁",
   "insufficient-funds": `经济不足，需要 ${ECONOMY_PROTOTYPE.drawCost} 经济`,
   "round-ended": "本局已结束",
 };
 
-const PLACEMENT_FAILURE_LABELS: Record<PlacementFailure, string> = {
+type PlacementKind = CardKind | "technology";
+
+const PLACEMENT_FAILURE_LABELS: Record<PlacementFailure | TechnologyBuildFailure, string> = {
+  "already-built": "科技设施已建成",
+  "insufficient-funds": "经济不足，无法建造科技设施",
   "round-ended": "本局已结束，无法建造",
   "out-of-bounds": "目标格超出地图边界",
   "player-cell": "不能在玩家脚下建造",
@@ -55,7 +60,7 @@ interface ExpeditionActions {
   readonly debug: boolean;
   spawnEnemy(): void;
   spawnStress(count: number): void;
-  checkPlacement(cell: GridPosition, kind: CardKind | "technology"): PlacementFailure | undefined;
+  checkPlacement(cell: GridPosition, kind: PlacementKind): PlacementFailure | undefined;
 }
 
 export class ExpeditionControls {
@@ -63,7 +68,8 @@ export class ExpeditionControls {
   private readonly checkPlacement: ExpeditionActions["checkPlacement"];
   private readonly challenge: boolean;
   private firstDrawReadyShown = false;
-  private selected?: CardKind;
+  private firstTechnologyReadyShown = false;
+  private selected?: PlacementKind;
   private finished = false;
   private recentDraw?: { readonly card: CardKind; readonly timer: number };
   private readonly drawnCards: Record<CardKind, number> = { wall: 0, tower: 0, economy: 0 };
@@ -109,13 +115,16 @@ export class ExpeditionControls {
     this.showRound(round);
     if (this.challenge) this.showFeedback(CHALLENGE_OPENING_HINT);
     this.makeCard.textContent = `制造卡牌（${ECONOMY_PROTOTYPE.drawCost} 经济）`;
-    this.research.textContent = `研发 Lv.2 工具（${TECHNOLOGY_PROTOTYPE.researchCost} 经济）`;
+    this.research.textContent = `研发 Lv.2 工具（${this.economy.researchCost} 经济）`;
+    const technologyCost = this.economy.technologyBuildCost;
+    write(this.rebuild, technologyCost === undefined ? "重建科技设施" : `建造科技设施（${technologyCost} 经济）`);
+    if (technologyCost === undefined) this.rebuild.removeAttribute("aria-pressed");
     this.makeCard.addEventListener("click", () => {
       const before = this.economy.cards;
       const card = this.finished ? undefined : this.economy.drawCard();
       if (card) {
         this.showDrawFeedback(card, before[card], this.economy.cards[card]);
-        if (this.status.textContent === FIRST_CARD_READY_HINT) this.showFeedback("");
+        if (this.status.textContent?.includes(FIRST_CARD_READY_HINT)) this.showFeedback("");
       }
       this.refresh();
     }, options);
@@ -124,7 +133,16 @@ export class ExpeditionControls {
       this.refresh();
     }, options);
     this.rebuild.addEventListener("click", () => {
-      const reason = this.checkPlacement(this.economy.technologyCell, "technology");
+      if (this.challenge) {
+        if (this.finished || this.economy.technologyFailure) return;
+        this.selected = this.selected === "technology" ? undefined : "technology";
+        this.showFeedback(this.selected ? "点击空地放置科技设施" : "已取消选择");
+        this.refresh();
+        return;
+      }
+      const cell = this.economy.technologyCell;
+      if (!cell) return;
+      const reason = this.checkPlacement(cell, "technology");
       if (!reason && this.economy.rebuildTechnology()) {
         this.showFeedback("已重建科技设施");
       } else {
@@ -161,6 +179,10 @@ export class ExpeditionControls {
     this.refresh();
   }
 
+  private placementRejection(cell: GridPosition, kind: PlacementKind): PlacementFailure | TechnologyBuildFailure | undefined {
+    return this.checkPlacement(cell, kind) ?? (kind === "technology" ? this.economy.technologyFailure : undefined);
+  }
+
   previewPlacement(cell: GridPosition | null): PlacementPreview | undefined {
     const { placementPreview } = this;
     if (!cell || !this.selected) {
@@ -173,7 +195,7 @@ export class ExpeditionControls {
       return undefined;
     }
 
-    const reason = this.checkPlacement(cell, this.selected);
+    const reason = this.placementRejection(cell, this.selected);
     const state = reason ? "invalid" : "valid";
     if (placementPreview.dataset.state !== state) placementPreview.dataset.state = state;
     if (reason && placementPreview.dataset.reason !== reason) placementPreview.dataset.reason = reason;
@@ -186,9 +208,14 @@ export class ExpeditionControls {
   placeSelected(cell: GridPosition): boolean {
     const selected = this.selected;
     if (!selected) return false;
-    const reason = this.checkPlacement(cell, selected);
+    const reason = this.placementRejection(cell, selected);
     if (reason) {
       this.showFeedback(PLACEMENT_FAILURE_LABELS[reason]);
+      return true;
+    }
+
+    if (selected === "technology") {
+      this.placePaidTechnology(cell);
       return true;
     }
 
@@ -203,6 +230,25 @@ export class ExpeditionControls {
     if (!this.economy.cards[selected]) this.selected = undefined;
     this.refresh();
     return true;
+  }
+
+  private placePaidTechnology(cell: GridPosition): void {
+    const before = this.economy.balance;
+    const building = this.economy.buildTechnology(cell);
+    if (!building) {
+      this.showFeedback("当前无法在该格建造");
+      return;
+    }
+    const { balance, technologyBuildCost, drawFailure } = this.economy;
+    let feedback = `已建造科技设施 (${cell.col}, ${cell.row}) · 消耗 ${technologyBuildCost} 经济`
+      + ` · 余额 ${before.toFixed(1)} → ${balance.toFixed(1)}`;
+    if (!this.firstDrawReadyShown && drawFailure === undefined) {
+      this.firstDrawReadyShown = true;
+      feedback += ` · ${FIRST_CARD_READY_HINT}`;
+    }
+    this.showFeedback(feedback);
+    this.selected = undefined;
+    this.refresh();
   }
 
   showBuilding(text: string): void {
@@ -259,10 +305,19 @@ export class ExpeditionControls {
       this.showFeedback(FIRST_CARD_READY_HINT);
     }
     write(this.tool, `Lv.${toolLevel}`);
-    const canResearch = !this.finished && toolLevel < 2 && hasTechnology && balance >= TECHNOLOGY_PROTOTYPE.researchCost;
+    const canResearch = !this.finished && toolLevel < 2 && hasTechnology && balance >= this.economy.researchCost;
     if (this.research.disabled === canResearch) this.research.disabled = !canResearch;
     if (this.rebuild.hidden !== hasTechnology) this.rebuild.hidden = hasTechnology;
-    if (this.rebuild.disabled !== this.finished) this.rebuild.disabled = this.finished;
+    const technologyDisabled = this.finished || (this.challenge && this.economy.technologyFailure !== undefined);
+    if (this.rebuild.disabled !== technologyDisabled) this.rebuild.disabled = technologyDisabled;
+    if (this.challenge) {
+      const pressed = String(this.selected === "technology");
+      if (this.rebuild.getAttribute("aria-pressed") !== pressed) this.rebuild.setAttribute("aria-pressed", pressed);
+      if (!technologyDisabled && !hasTechnology && !this.firstTechnologyReadyShown) {
+        this.firstTechnologyReadyShown = true;
+        this.showFeedback("已可建造科技设施，选择后在周围空地放置");
+      }
+    }
     if (this.spawn.disabled !== this.finished) this.spawn.disabled = this.finished;
     if (this.stress.disabled !== this.finished) this.stress.disabled = this.finished;
   }
@@ -293,6 +348,7 @@ export class ExpeditionControls {
   reset(): void {
     this.economy.reset();
     this.firstDrawReadyShown = false;
+    this.firstTechnologyReadyShown = false;
     this.selected = undefined;
     this.clearDrawFeedback();
     for (const card of CARD_KINDS) this.drawnCards[card] = 0;

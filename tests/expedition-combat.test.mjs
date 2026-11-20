@@ -53,13 +53,20 @@ test("a corner wall blocks player sight even when an open approach is available"
   assert.ok(structure && map.isWalkable(cell(5, 6)) && map.isWalkable(cell(6, 6)));
   const { simulation, events } = runCombat(map);
   simulation.spawn(1, 1, { hp: 4, contactDamage: 2 });
-  simulation.step(1, cell(6, 6));
+  const player = cell(6, 6);
+  simulation.step(43, player);
+  assert.equal(map.getBuilding(structure.cell), structure, "Adjacent centers are too far apart for contact");
+  simulation.step(1, player);
   assert.deepEqual(events, [
     { type: "targetSelected", enemyId: 1, target: { kind: "building", cell: structure.cell, buildingId: structure.id } },
     { type: "buildingHit", enemyId: 1, buildingId: structure.id, buildingKind: "economy",
       cell: structure.cell, damage: 2, hp: 4, destroyed: false },
   ]);
   assert.equal(map.getBuilding(structure.cell).hp, 4);
+  simulation.step(2_000, player);
+  assert.equal(map.getBuilding(structure.cell).hp, 4, "A continuous engagement applies only one hit");
+  assert.equal(events.filter(({ type }) => type === "buildingHit").length, 1);
+  assert.deepEqual([...simulation.enemies].map(({ id, hp }) => [id, hp]), [[1, 4]]);
   assert.equal(simulation.counters.towerKills, 0);
 });
 
@@ -105,8 +112,30 @@ test("a proven breach damages a wall once, then a survivor can attack the buildi
     type: "buildingHit", enemyId: 2, buildingId: protectedBuilding.id, buildingKind: "economy",
     cell: protectedBuilding.cell, damage: 3, hp: 5, destroyed: false,
   }]);
-  assert.deepEqual([...simulation.enemies], []);
+  assert.deepEqual([...simulation.enemies].map(({ id }) => id), [2]);
+  assert.equal(simulation.spawnCounts.removed, 1);
   assert.equal(simulation.counters.towerKills, 0);
+});
+
+test("normal card placement and map defaults give non-wall structures one HP", () => {
+  const map = makeMap();
+  const technology = cell(6, 5);
+  const economy = new ExpeditionEconomy(map, 1, technology);
+  const buildings = [
+    map.getBuilding(technology),
+    economy.placeCard("tower", cell(5, 7)),
+    economy.placeCard("economy", cell(7, 5)),
+    economy.placeCard("wall", cell(7, 7)),
+  ];
+  assert.deepEqual(buildings.map(({ kind, hp, maxHp }) => [kind, hp, maxHp]), [
+    ["technology", 1, 1], ["tower", 1, 1], ["economy", 1, 1], ["wall", 50, 50],
+  ]);
+
+  const [oldest, ...mergeTiles] = [8, 9, 10, 11].map((col) => cell(col, 10));
+  const first = map.placeBuilding("tower", oldest);
+  for (const position of mergeTiles) map.placeBuilding("tower", position);
+  const merged = map.getBuilding(oldest);
+  assert.deepEqual([merged.id, merged.level, merged.hp, merged.maxHp], [first.id, 2, 1, 1]);
 });
 
 test("direct non-wall damage rejects stale IDs, preserves topology on partial hits and caps overkill", () => {
@@ -137,16 +166,18 @@ test("real enemy hits destroy the technology facility while same-round research 
   assert.equal(economy.balance, TECHNOLOGY_PROTOTYPE.researchCost);
   assert.equal(economy.researchTool(), true);
   const original = map.getBuilding(technology);
-  const hp = ECONOMY_PROTOTYPE.buildingHp.technology;
+  assert.equal(original.hp, ECONOMY_PROTOTYPE.buildingHp.technology);
+  assert.equal(original.hp, 1);
   const revision = map.revision;
   const { simulation, events } = runCombat(map, (event) => economy.handleEvent(event));
-  simulation.spawn(3, 1, { hp: 4, contactDamage: hp - 4 });
-  simulation.step(1);
+  simulation.spawn(3, 1, { hp: 4, contactDamage: 8 });
+  simulation.step(44);
   const impacts = events.filter((event) => event.type === "buildingHit");
   assert.deepEqual(impacts.map(({ enemyId, buildingId, hp, damage }) => [enemyId, buildingId, hp, damage]), [
-    [1, original.id, 4, hp - 4], [2, original.id, 0, 4],
+    [1, original.id, 0, 1],
   ]);
-  assert.deepEqual([...simulation.enemies].map((enemy) => enemy.id), [3]);
+  assert.deepEqual([...simulation.enemies].map((enemy) => enemy.id), [1, 2, 3]);
+  assert.equal(simulation.spawnCounts.removed, 0);
   assert.equal(map.revision, revision + 1);
   assert.equal(economy.balance, 0, "Contacts do not award kills");
   assert.equal(economy.hasTechnology, false);
@@ -155,6 +186,7 @@ test("real enemy hits destroy the technology facility while same-round research 
   const rebuilt = economy.rebuildTechnology();
   assert.ok(rebuilt);
   assert.notEqual(rebuilt.id, original.id);
+  assert.equal(rebuilt.hp, 1);
   assert.equal(economy.toolLevel, 2);
   assert.equal(economy.hasTechnology, true);
 });
@@ -213,16 +245,18 @@ test("an enemy at an unowned fallback resumes pursuit when a building becomes re
   const site = cell(6, 5);
   const { simulation, events } = runCombat(map, undefined, site);
   simulation.spawn(1, 1);
-  simulation.step(1);
-  assert.ok(events.some((event) => event.type === "buildingContact"));
+  simulation.step(DEFENSE_CONFIG.travelMs + 1);
+  assert.ok(!events.some(({ type }) => type === "buildingContact" || type === "buildingHit"));
   assert.equal([...simulation.enemies].length, 1);
+  assert.equal(simulation.counters.buildingContacts, 0);
 
-  const structure = map.placeBuilding("economy", cell(4, 5), 2);
+  const [enemy] = simulation.enemies;
+  const structure = map.placeBuilding("economy", cell(enemy.cell.col, enemy.cell.row + 1), 2);
   assert.ok(structure);
-  simulation.step(1);
+  simulation.step(DEFENSE_CONFIG.travelMs);
   assert.equal(events.find((event) => event.type === "buildingHit")?.buildingId, structure.id);
   assert.equal(map.getBuilding(structure.cell)?.hp, 1);
-  assert.equal([...simulation.enemies].length, 0);
+  assert.deepEqual([...simulation.enemies].map(({ id }) => id), [enemy.id]);
 });
 
 test("250 active play enemies reuse one measured route field for multiple owned structures", () => {

@@ -203,7 +203,7 @@ export class TerrainMap implements TerrainReader {
     return this.#buildings.values();
   }
 
-  placeBuilding(kind: BuildingKind, position: GridPosition, hp = 50): Building | undefined {
+  placeBuilding(kind: BuildingKind, position: GridPosition, hp = kind === "wall" ? 50 : 1): Building | undefined {
     if (!this.isInside(position) || this.cellRow(position.row)[position.col].terrain !== "empty") return undefined;
     const building = this.#buildings.place(kind, position, hp);
     if (!building) return undefined;

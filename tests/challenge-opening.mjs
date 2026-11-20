@@ -19,6 +19,8 @@ const moveMs = 200;
 const replayDeadlineMs = 150_000;
 const representativeSeeds = [12, 9, 512, 1091, 0, DEFAULT_MAP_SEED, 0xffff_ffff];
 const defensiveKinds = new Set(["wall", "tower"]);
+const facilitySite = { col: 18, row: 92 };
+const facilityBuilder = { col: 19, row: 92 };
 
 function cell(col, row) { return { col, row }; }
 function distance(a, b) { return Math.abs(a.col - b.col) + Math.abs(a.row - b.row); }
@@ -49,6 +51,12 @@ function adjacent({ col, row }) {
   return [cell(col, row + 1), cell(col - 1, row), cell(col, row - 1), cell(col + 1, row)];
 }
 
+function isStarterOre(map, target) {
+  if ((target.col > 22 && target.row >= 93) || distance(map.spawn, target) > 12) return false;
+  const tile = map.getCell(target);
+  return tile?.terrain === "dirt" && tile.terrainLevel === 1;
+}
+
 function createPlayTerrain(seed) {
   const world = generateExpeditionWorld(seed);
   const { layout, biomes } = generateExpeditionBiomes(world.layout, world.effectiveSeed);
@@ -66,9 +74,7 @@ function initialOre(map) {
   for (const { cell: origin } of open.queue) {
     for (const target of adjacent(origin)) {
       // Keep all excavation behind the intake barrier line so it cannot bypass the wall fixture.
-      if ((target.col > 22 && target.row >= 93) || distance(map.spawn, target) > 12) continue;
-      const tile = map.getCell(target);
-      if (tile?.terrain === "dirt" && tile.terrainLevel === 1) {
+      if (isStarterOre(map, target)) {
         ore.set(target.row * map.columns + target.col, target);
       }
     }
@@ -122,7 +128,7 @@ class OpeningRun {
   }
 
   economicState() {
-    const technology = this.map.getBuilding(this.economy.technologyCell);
+    const technology = this.economy.technologyCell && this.map.getBuilding(this.economy.technologyCell);
     return {
       totals: this.economy.totals, cards: this.economy.cards, playerHp: this.round.playerHp,
       technologyHp: technology?.hp ?? null, toolLevel: this.economy.toolLevel,
@@ -153,7 +159,7 @@ class OpeningRun {
     }
     this.economy.advance(frameMs);
     this.observeAffordability();
-    this.simulation.step(frameMs, this.player.cell);
+    this.simulation.step(frameMs, this.player);
   }
 
   observeAffordability() {
@@ -201,13 +207,13 @@ class OpeningRun {
     });
   }
 
-  mineToIncome(tenths) {
+  mineToIncome(tenths, pauseMs = 0) {
     assert.equal(this.difficulty, "challenge");
     while (toEconomyTenths(this.economy.totals.miningIncome) < tenths && this.round.phase !== "lost") {
       const choices = [];
       for (const origin of reachable(this.map, this.player.cell).queue) {
         for (const target of adjacent(origin.cell)) {
-          if (!this.setupResources.ore.has(target.row * this.map.columns + target.col) || this.map.getCell(target)?.terrain !== "dirt") continue;
+          if (!isStarterOre(this.map, target)) continue;
           choices.push({ origin, target });
         }
       }
@@ -217,6 +223,7 @@ class OpeningRun {
       assert.ok(first, `seed ${this.seed} has no remaining accessible starter ore`);
       this.moveTo(first.origin.cell);
       if (this.round.phase !== "lost") this.mine(first.target);
+      for (let elapsed = 0; elapsed < pauseMs && this.round.phase !== "lost"; elapsed += frameMs) this.tick();
     }
   }
 
@@ -229,18 +236,37 @@ class OpeningRun {
     return card;
   }
 
-  place(kind, target) {
+  checkPlacement(kind, target) {
     this.fog.reveal(this.player.cell);
-    const reason = placementFailure(this.map, target, {
+    const reserved = [GENERATED_ENEMY_ENTRY, GENERATED_GOAL];
+    if (kind !== "technology" && this.economy.technologyCell) reserved.push(this.economy.technologyCell);
+    return placementFailure(this.map, target, {
       playerPosition: this.player.position,
       roundEnded: this.round.phase === "lost", visible: this.fog.visibility(target) === "visible",
-      reserved: [GENERATED_ENEMY_ENTRY, GENERATED_GOAL, this.economy.technologyCell].some((reserved) => sameCell(target, reserved)),
+      reserved: reserved.some((cell) => sameCell(target, cell)),
       enemyOccupies: (position) => this.simulation.occupies(position), cardCount: this.economy.cards[kind],
     });
+  }
+
+  place(kind, target) {
+    const reason = this.checkPlacement(kind, target);
     assert.equal(reason, undefined, `legal ${kind} placement at ${JSON.stringify(target)}`);
     const placed = this.economy.placeCard(kind, target);
     assert.ok(placed);
     this.construction.push({ atMs: this.now, kind, target, from: this.player.cell });
+  }
+
+  fundFacility(pauseMs = 0) {
+    const cost = this.economy.technologyBuildCost;
+    this.mineToIncome(toEconomyTenths(cost), pauseMs);
+    this.moveTo(facilityBuilder);
+    assert.equal(this.checkPlacement("technology", facilitySite), undefined);
+    const balanceBefore = this.economy.balance;
+    assert.ok(this.economy.buildTechnology(facilitySite));
+    assert.equal(this.economy.balance, balanceBefore - cost);
+    this.facility = { atMs: this.now, balanceBefore, balanceAfter: this.economy.balance, cost,
+      target: facilitySite, from: this.player.cell };
+    return toEconomyTenths(cost);
   }
 
   snapshot() {
@@ -250,7 +276,7 @@ class OpeningRun {
       playerCell: this.player.cell, phase: this.round.phase, wave: this.round.wave,
       firstIncomeAtMs: this.firstIncomeAtMs, firstCanDrawAtMs: this.firstCanDrawAtMs, firstDefenseDrawAtMs: this.firstDefenseDrawAtMs,
       initialOpenCells: this.setupResources.openCells, initialStarterDirt: this.setupResources.ore.size,
-      miningActions: this.miningActions, draws: this.draws, construction: this.construction,
+      miningActions: this.miningActions, draws: this.draws, construction: this.construction, facility: this.facility ?? null,
       waves: this.waves, endOfFirstAttack: this.endOfFirstAttack,
       combat: this.simulation.waveMetrics, combatEvents: this.combatEvents, economyHistory: this.history.snapshot(this.economy.totals),
     };
@@ -261,7 +287,9 @@ export function replayChallengeFunding(seed) {
   const run = new OpeningRun(seed);
   assert.equal(run.effectiveSeed, seed);
   const budgets = [];
-  for (const thresholdTenths of [30, 60, 90]) {
+  const facilityCost = run.fundFacility();
+  for (const cardCount of [1, 2, 3]) {
+    const thresholdTenths = facilityCost + toEconomyTenths(cardCount * ECONOMY_PROTOTYPE.drawCost);
     run.mineToIncome(thresholdTenths);
     assert.ok(run.economy.balance >= ECONOMY_PROTOTYPE.drawCost);
     const timestamp = run.now;
@@ -272,6 +300,23 @@ export function replayChallengeFunding(seed) {
   }
   assert.ok(run.now < 60_000);
   return { ...run.snapshot(), budgets };
+}
+
+export function replayChallengeResearch(seed, pauseMs) {
+  const run = new OpeningRun(seed);
+  const facilityCost = run.fundFacility(pauseMs);
+  const cardCost = toEconomyTenths(ECONOMY_PROTOTYPE.drawCost);
+  run.mineToIncome(facilityCost + cardCost, pauseMs);
+  const firstCard = run.draw();
+  const cardAtMs = run.now;
+  assert.ok(firstCard);
+  assert.equal(run.economy.researchTool(), false, "A first craft cannot also fund the upgrade");
+  const researchCost = run.economy.researchCost;
+  run.mineToIncome(facilityCost + cardCost + toEconomyTenths(researchCost), pauseMs);
+  const researchAtMs = run.round.phase !== "lost" && run.economy.researchTool() ? run.now : null;
+  return { seed, pauseMs, facilityAtMs: run.facility.atMs, cardAtMs, firstCard, researchCost, researchAtMs,
+    toolLevel: run.economy.toolLevel, income: run.economy.totals.miningIncome, firstWaveAtMs: run.waves[0]?.atMs ?? null,
+    phase: run.round.phase, playerHp: run.round.playerHp, hasTechnology: run.economy.hasTechnology, elapsedMs: run.now };
 }
 
 export function screenChallengeFunding() {
@@ -313,20 +358,21 @@ function fundAndDraw(run, tenths, expected) {
 }
 
 function challengeStrategy(run, strategy) {
+  const facilityCost = run.fundFacility();
   if (strategy === "wall" || strategy === "mixed") {
-    fundAndDraw(run, 30, "wall");
+    fundAndDraw(run, facilityCost + 30, "wall");
     placeIntakeWall(run);
   }
   if (strategy === "mixed") {
-    fundAndDraw(run, 60, "tower");
+    fundAndDraw(run, facilityCost + 60, "tower");
     placeIntakeTower(run, cell(23, 93));
-    fundAndDraw(run, 90, "tower");
+    fundAndDraw(run, facilityCost + 90, "tower");
     placeIntakeTower(run, cell(22, 92));
   }
   if (strategy === "tower") {
-    fundAndDraw(run, 30, "tower");
+    fundAndDraw(run, facilityCost + 30, "tower");
     placeIntakeTower(run, cell(23, 93));
-    fundAndDraw(run, 60, "tower");
+    fundAndDraw(run, facilityCost + 60, "tower");
     placeIntakeTower(run, cell(22, 92));
   }
 }

@@ -22,6 +22,7 @@ function fixture(difficulty = "challenge") {
   tiles[water.row][water.col] = "~";
   tiles[hardDirt.row][hardDirt.col] = "2";
   for (let col = 2; col <= 7; col += 1) tiles[10][col] = "+";
+  for (let col = 1; col <= 20; col += 1) tiles[12][col] = "+";
   const map = new TerrainMap(tiles.map((row) => row.join("")));
   const economy = new ExpeditionEconomy(map, 12, technology, difficulty);
   const credit = (strike) => economy.creditMiningDamage(strike?.result.damage ?? 0);
@@ -71,8 +72,15 @@ test("interruptions preserve HP and cooldown; total coin credit is independent o
   }
 });
 
-test("the first paid draw unlocks at exactly 30 HP and can spend the entire balance", () => {
+test("after buying technology, exactly 30 more mined HP can pay for the first card", () => {
   const { map, economy, credit } = fixture();
+  for (let col = 1; col <= 20; col += 1) {
+    const result = map.applyDigDamage(cell(col, 13), cell(col, 12), 5);
+    assert.equal(economy.creditMiningDamage(result.damage), 0.5);
+  }
+  assert.equal(economy.balance, 10);
+  assert.equal(economy.drawFailure, "technology-missing");
+  assert.ok(economy.buildTechnology(technology));
   const mining = new MiningSession(map);
   let time = 0;
   for (let col = 2; col <= 7; col += 1) {
@@ -91,7 +99,8 @@ test("the first paid draw unlocks at exactly 30 HP and can spend the entire bala
   assert.equal(economy.balance, 3);
   assert.ok(economy.drawCard());
   assert.equal(economy.balance, 0);
-  assert.equal(economy.totals.miningIncome, 3);
+  assert.equal(economy.totals.miningIncome, 13);
+  assert.equal(economy.totals.technologySpend, 10);
   assert.equal(economy.totals.cardSpend, 3);
   assert.equal(economy.totals.cardsMade, 1);
 });
@@ -117,7 +126,7 @@ test("the wave ledger subtracts tenths exactly and preserves unrelated income at
   assert.deepEqual(history.snapshot(economy.totals)[1], {
     waveId: 1, openingBalance: 0.2, balance: 3.3, net: 3.1,
     cohortKillIncome: 2, killIncome: 2, productionIncome: 1,
-    cardsMade: 0, cardSpend: 0, researchSpend: 0, miningIncome: 0.1,
+    cardsMade: 0, cardSpend: 0, researchSpend: 0, miningIncome: 0.1, technologySpend: 0,
   });
 });
 
@@ -142,7 +151,7 @@ test("Challenge counts tenths exactly across repeated credits and clears economy
   assert.equal(economy.balance, 0);
   assert.equal(economy.totals.miningIncome, 0);
   assert.equal(history.snapshot(economy.totals)[0].miningIncome, 0);
-  assert.equal(economy.hasTechnology, true);
+  assert.equal(economy.hasTechnology, false);
   assert.equal(credit(mining.begin(origin, dirt, 0)), 0.1);
 });
 
@@ -157,6 +166,8 @@ test("Baseline, A and B still mine without income or a new ledger field", () => 
     assert.equal(credit(strike), 0);
     assert.equal(economy.balance, 8);
     assert.equal(Object.hasOwn(economy.totals, "miningIncome"), false);
+    assert.equal(Object.hasOwn(economy.totals, "technologySpend"), false);
     assert.equal(Object.hasOwn(history.snapshot(economy.totals)[0], "miningIncome"), false);
+    assert.equal(Object.hasOwn(history.snapshot(economy.totals)[0], "technologySpend"), false);
   }
 });

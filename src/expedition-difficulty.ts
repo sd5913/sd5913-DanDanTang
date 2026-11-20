@@ -27,6 +27,8 @@ export interface DifficultyEconomy {
   readonly initialCards: Readonly<Record<CardKind, number>>;
   readonly miningIncomeTenthsPerHp: number;
   readonly guaranteedDefenseDraw: number;
+  readonly technologyBuildCost?: number;
+  readonly researchCost: number;
 }
 
 interface DifficultyProfile {
@@ -59,10 +61,12 @@ const fasterSchedule = Object.freeze({
 const standardEconomy = Object.freeze({
   initialBalance: 8, initialCards: Object.freeze({ wall: 4, tower: 2, economy: 1 }),
   miningIncomeTenthsPerHp: 0, guaranteedDefenseDraw: 0,
+  researchCost: 10,
 });
 const challengeEconomy = Object.freeze({
   initialBalance: 0, initialCards: Object.freeze({ wall: 0, tower: 0, economy: 0 }),
   miningIncomeTenthsPerHp: 1, guaranteedDefenseDraw: 3,
+  technologyBuildCost: 10, researchCost: 20,
 });
 const challengeNormal = Object.freeze({ ...fasterNormal, preparingMs: 60_000, recoveringMs: 20_000 });
 const challengeSchedule = Object.freeze({

@@ -1,8 +1,9 @@
 import Phaser from "phaser";
 import { overlapsCell, placementFailure } from "./build-placement.ts";
 import type { PlacementFailure, PlacementPreview } from "./build-placement.ts";
-import { DefenseSimulation, enemyPosition, sameCell } from "./defense-simulation.ts";
+import { DefenseSimulation, enemyWorldPosition, sameCell } from "./defense-simulation.ts";
 import type { DefenseEvent, DefenseEventMetadata } from "./defense-simulation.ts";
+import { ENEMY_RADIUS } from "./enemy-contact.ts";
 import type { BuildingKind } from "./buildings.ts";
 import { BUILDING_NAMES, ExpeditionControls } from "./expedition-controls.ts";
 import type { CardKind } from "./expedition-economy.ts";
@@ -10,8 +11,8 @@ import type { DifficultyId } from "./expedition-difficulty.ts";
 import { ExpeditionRound } from "./expedition-round.ts";
 import type { RoundSpeed } from "./expedition-round.ts";
 import type { BiomeId } from "./expedition-biomes.ts";
-import { cellCenter, TILE_SIZE } from "./player.ts";
-import type { Player } from "./player.ts";
+import { cellCenter, TILE_SIZE, worldToCell } from "./player.ts";
+import type { Player, Point } from "./player.ts";
 import type { GridPosition, TerrainMap } from "./terrain.ts";
 import { WaveEconomyHistory } from "./wave-economy-history.ts";
 
@@ -19,6 +20,8 @@ const SHOT_VISIBLE_MS = 140;
 const METRICS_REFRESH_MS = 200;
 const ATTACK_NOTICE_COOLDOWN_MS = 3_000;
 const BREACH_NOTICE_MS = 4_500;
+const HIT_MARKER_MS = 160;
+const MAX_CONTACT_RECORDS = 24;
 
 function field<T extends HTMLElement = HTMLElement>(id: string): T {
   const element = document.getElementById(id);
@@ -41,6 +44,13 @@ function relativeDirection(player: GridPosition, building: GridPosition): string
 }
 
 type Shot = Extract<DefenseEvent, { type: "towerShot" }>;
+type HitTrace = NonNullable<DefenseEventMetadata["contact"]> & {
+  readonly timeMs: number;
+  readonly enemyId: number;
+  readonly hpBefore: number;
+  readonly hpAfter: number;
+  readonly playerCell: GridPosition;
+};
 
 export interface DefenseScenario {
   readonly entry: GridPosition;
@@ -63,6 +73,7 @@ export class DefenseDebug {
   private readonly labels: Phaser.GameObjects.Text[] = [];
   private readonly stats = field("defense-stats");
   private readonly combatStats = field("defense-combat-stats");
+  private readonly contactTrace = field<HTMLTextAreaElement>("player-contact-trace");
   private readonly status = field("defense-feedback");
   private readonly breach = field("round-breach");
   private readonly hover = field("defense-hover");
@@ -74,6 +85,9 @@ export class DefenseDebug {
   private readonly round?: ExpeditionRound;
   private readonly economyHistory?: WaveEconomyHistory;
   private shots: { readonly event: Shot; readonly expires: number }[] = [];
+  private hitMarkers: { readonly world: Point; readonly expires: number }[] = [];
+  private readonly pendingContacts: HitTrace[] = [];
+  private readonly contactRecords: unknown[] = [];
   private timeMs = 0;
   private nextMetricsAtMs = 0;
   private readonly attackNoticeAt = new Map<string, number>();
@@ -136,7 +150,7 @@ export class DefenseDebug {
         this.simulation.finishAttackPhase(this.round.wave, spawned === removed && pending === 0 ? "resolved" : "time-limit");
       }
       this.expedition.economy.advance(elapsed);
-      this.simulation.step(elapsed, this.player.cell);
+      this.simulation.step(elapsed, this.player);
       this.expedition.showRound(this.round);
       this.expedition.refresh();
       this.publishWaveMetrics(phase !== this.round.phase);
@@ -188,15 +202,12 @@ export class DefenseDebug {
       active += 1;
       northRow = Math.min(northRow, enemy.cell.row);
       if (enemy.unreachable) unreachable += 1;
-      const point = enemyPosition(enemy);
-      if (!isVisible({ col: Math.floor(point.x), row: Math.floor(point.y) })) continue;
-      const x = point.x * TILE_SIZE;
-      const y = point.y * TILE_SIZE;
-      if (!view.contains(x, y)) continue;
+      const world = enemyWorldPosition(enemy);
+      if (!this.enemyVisibility(world, view).drawn) continue;
       visible += 1;
-      graphics.fillStyle(0xec817a).fillCircle(x, y, 5);
-      graphics.lineStyle(1, 0x582c35).strokeCircle(x, y, 5);
+      this.drawEnemyDot(world);
     }
+    this.renderPlayerContacts(view);
 
     this.showStats(active, visible, Number.isFinite(northRow) ? northRow : -1, unreachable);
     const building = cell && isVisible(cell) ? this.map.getBuilding(cell) : undefined;
@@ -215,6 +226,10 @@ export class DefenseDebug {
     this.attackNoticeAt.clear();
     this.clearBreach();
     this.shots = [];
+    this.hitMarkers = [];
+    this.pendingContacts.length = 0;
+    this.contactRecords.length = 0;
+    this.contactTrace.value = "";
     if (this.round && this.expedition) {
       this.round.reset();
       this.expedition.showRound(this.round);
@@ -297,8 +312,9 @@ export class DefenseDebug {
 
   private checkPlacement(cell: GridPosition, kind: CardKind | "technology"): PlacementFailure | undefined {
     const economy = this.expedition?.economy;
+    const technologyCell = economy?.technologyCell;
     const reserved = sameCell(cell, this.scenario.entry) || sameCell(cell, this.scenario.target)
-      || (kind !== "technology" && economy !== undefined && sameCell(cell, economy.technologyCell));
+      || (kind !== "technology" && technologyCell !== undefined && sameCell(cell, technologyCell));
     return placementFailure(this.map, cell, {
       playerPosition: this.player.position,
       roundEnded: this.roundEnded,
@@ -335,10 +351,49 @@ export class DefenseDebug {
       const previousHp = this.round.playerHp;
       this.round.hitPlayer(event.damage);
       const damage = previousHp - this.round.playerHp;
-      this.simulation.recordPlayerDamage(metadata.waveId, damage);
+      this.simulation.recordPlayerDamage(metadata.waveId, damage, metadata.timeMs);
+      if (metadata.contact && metadata.cell) {
+        const { enemyWorld } = metadata.contact;
+        this.hitMarkers.push({ world: enemyWorld, expires: this.graphics.scene.time.now + HIT_MARKER_MS });
+        if (this.scenario.debugControls) {
+          this.pendingContacts.push({ ...metadata.contact, enemyId: event.enemyId, timeMs: metadata.timeMs,
+            hpBefore: previousHp, hpAfter: this.round.playerHp, playerCell: metadata.cell });
+        }
+      }
       if (damage > 0) this.expedition?.showFeedback(`玩家受袭 · -${damage} HP`);
       if (this.roundEnded) this.stopCombat();
     }
+  }
+
+  private enemyVisibility(world: Point, view: Phaser.Geom.Rectangle) {
+    const cameraVisible = view.contains(world.x, world.y);
+    const fogVisible = this.isVisible(worldToCell(world.x, world.y));
+    return { cameraVisible, fogVisible, drawn: cameraVisible && fogVisible };
+  }
+
+  private drawEnemyDot({ x, y }: Point): void {
+    this.graphics.fillStyle(0xec817a).fillCircle(x, y, ENEMY_RADIUS);
+    this.graphics.lineStyle(1, 0x582c35).strokeCircle(x, y, ENEMY_RADIUS);
+  }
+
+  private renderPlayerContacts(view: Phaser.Geom.Rectangle): void {
+    const now = this.graphics.scene.time.now;
+    this.hitMarkers = this.hitMarkers.filter(({ expires }) => expires > now);
+    for (const { world } of this.hitMarkers) {
+      if (this.enemyVisibility(world, view).drawn) this.drawEnemyDot(world);
+    }
+    if (this.pendingContacts.length === 0) return;
+    const camera = this.graphics.scene.cameras.main;
+    for (const contact of this.pendingContacts) {
+      const redDotWorld = contact.enemyWorld;
+      const visibility = this.enemyVisibility(redDotWorld, view);
+      this.contactRecords.push({ ...contact, redDotWorld,
+        canvasPoint: { x: camera.x + (redDotWorld.x - view.x) * camera.zoom,
+          y: camera.y + (redDotWorld.y - view.y) * camera.zoom }, ...visibility });
+    }
+    this.pendingContacts.length = 0;
+    this.contactRecords.splice(0, Math.max(0, this.contactRecords.length - MAX_CONTACT_RECORDS));
+    this.contactTrace.value = JSON.stringify(this.contactRecords, null, 2);
   }
 
   private showBuildingAttack(kind: BuildingKind, cell: GridPosition, hp: number, destroyed: boolean): void {

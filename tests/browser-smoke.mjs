@@ -6,16 +6,20 @@ import { MINING_CONFIG } from '../src/mining-config.ts';
 import { TerrainMap } from '../src/terrain.ts';
 import { runBuildDebugIsolationSmoke, runBuildRangeSmoke } from './browser-build-range.mjs';
 import { runCardFeedbackSmoke, runDestroyedTechFeedbackSmoke } from './browser-card-feedback.mjs';
-import { runChallengeLossSmoke, runChallengePitySmoke, runChallengeTowerSmoke, runChallengeWallSmoke } from './browser-challenge.mjs';
+import {
+  runChallengeLossSmoke, runChallengePitySmoke, runChallengeTechnologyRelocationSmoke, runChallengeTowerSmoke,
+  runChallengeVictorySmoke, runChallengeWallSmoke,
+} from './browser-challenge.mjs';
 import { runDenseMapSmoke } from './browser-dense-map.mjs';
 import { runDefenseSmoke } from './browser-defense.mjs';
+import { runEnemyContactSmoke } from './browser-enemy-contact.mjs';
 import { runBiomeFogSmoke, runExpeditionSmoke, runResearchSmoke, runStrataSeedSmoke } from './browser-expedition.mjs';
 import { runFix02MapSmoke, runFix02DefenseSmoke, runFix02RoundSmoke, runSynthesisSmoke } from './browser-fix02.mjs';
 import { runLossSmoke, runVictorySmoke } from './browser-goal.mjs';
 import { runLongMapSmoke } from './browser-long-map.mjs';
 import { runTerminalMiningPreviewSmoke, runWideMiningPreviewSmoke } from './browser-mining-preview.mjs';
 import {
-  runPressureAlertsSmoke, runPressureEconomySmoke, runPressureFirstWaveSmoke, runPressureForecastSmoke,
+  runFirstWaveFacilitySmoke, runPressureAlertsSmoke, runPressureEconomySmoke, runPressureFirstWaveSmoke, runPressureForecastSmoke,
   runPressureOutcomeSmoke, runPressurePlayerContactSmoke, runPressureProfileSelectionSmoke, runPressureQueueRolloverSmoke,
 } from './browser-pressure.mjs';
 
@@ -52,6 +56,8 @@ try {
       await runPressureEconomyBrowserSmoke(browser, url, mode);
     } else if (process.argv.includes('--pressure-combat')) {
       await runPressureCombatBrowserSmoke(browser, url, mode);
+    } else if (process.argv.includes('--contacts')) {
+      await runContactBrowserSmoke(browser, url, mode);
     } else if (process.argv.includes('--pressure-profiles')) {
       await runPressureProfilesBrowserSmoke(browser, url, mode, true);
     } else if (process.argv.includes('--fix01-a')) {
@@ -65,6 +71,7 @@ try {
       await runStrataBrowserSmoke(browser, url, mode);
     } else {
       await runStandardBrowserSmoke(browser, url, mode);
+      await runContactBrowserSmoke(browser, url, mode);
       await runPressureProfilesBrowserSmoke(browser, url, mode, process.argv.includes('--normal-round'));
       await runPressureCombatBrowserSmoke(browser, url, mode);
       await runPressureEconomyBrowserSmoke(browser, url, mode);
@@ -81,10 +88,21 @@ try {
   await server.close();
 }
 
+async function runContactBrowserSmoke(browser, url, mode) {
+  const viewport = { width: 1280, height: 900 };
+  const contacts = await withSmokePage(browser, viewport, (page) => runEnemyContactSmoke(page, url));
+  console.log(`Edge smoke (${mode}, enemy body contact): passed; ${JSON.stringify(contacts)}; no browser errors.`);
+  const wave = await withSmokePage(browser, viewport, (page) => runFirstWaveFacilitySmoke(page, url));
+  console.log(`Edge smoke (${mode}, first-wave facility contact): passed; ${JSON.stringify(wave)}; no browser errors.`);
+}
+
 async function runChallengeBrowserSmoke(browser, url, mode, full) {
   const viewport = { width: 1280, height: 900 };
   const cases = full
-    ? [runChallengeWallSmoke, runChallengeTowerSmoke, runChallengeLossSmoke, runChallengePitySmoke]
+    ? [
+      runChallengeWallSmoke, runChallengeTowerSmoke, runChallengeLossSmoke, runChallengePitySmoke,
+      runChallengeTechnologyRelocationSmoke, runChallengeVictorySmoke,
+    ]
     : [runChallengeWallSmoke];
   for (const run of cases) {
     const result = await withSmokePage(browser, viewport, (page) => run(page, url));
