@@ -3,8 +3,8 @@ import type { BuildingKind } from "./buildings.ts";
 import { BIOME_NAMES } from "./biome-effects.ts";
 import type { PlacementFailure, PlacementPreview } from "./build-placement.ts";
 import type { BiomeId } from "./expedition-biomes.ts";
-import { CARD_KINDS, ECONOMY_PROTOTYPE, ExpeditionEconomy } from "./expedition-economy.ts";
-import type { CardDrawFailure, CardKind, TechnologyBuildFailure } from "./expedition-economy.ts";
+import { CARD_KINDS, ExpeditionEconomy } from "./expedition-economy.ts";
+import type { CardDrawFailure, CardKind, EconomyExperiment, TechnologyBuildFailure } from "./expedition-economy.ts";
 import type { ExpeditionPhase, ExpeditionRound } from "./expedition-round.ts";
 import type { GridPosition, TerrainMap } from "./terrain.ts";
 
@@ -31,10 +31,9 @@ const CARD_DRAW_FEEDBACK_MS = 1_750;
 const CHALLENGE_OPENING_HINT = "挖掘地形获得经济，先建造科技设施，再制造建筑卡。";
 const FIRST_CARD_READY_HINT = "已可制造第一张建筑卡";
 const CARD_SYMBOLS: Record<CardKind, string> = { wall: "▦", tower: "▲", economy: "◆" };
-const DRAW_FAILURE_LABELS: Record<CardDrawFailure | "round-ended", string> = {
+const DRAW_FAILURE_LABELS: Record<Exclude<CardDrawFailure, "insufficient-funds"> | "round-ended", string> = {
   "technology-missing": "请先建造科技设施",
   "technology-destroyed": "科技设施已损毁",
-  "insufficient-funds": `经济不足，需要 ${ECONOMY_PROTOTYPE.drawCost} 经济`,
   "round-ended": "本局已结束",
 };
 
@@ -58,6 +57,7 @@ const PLACEMENT_FAILURE_LABELS: Record<PlacementFailure | TechnologyBuildFailure
 
 interface ExpeditionActions {
   readonly debug: boolean;
+  readonly economyExperiment?: EconomyExperiment;
   spawnEnemy(): void;
   spawnStress(count: number): void;
   checkPlacement(cell: GridPosition, kind: PlacementKind): PlacementFailure | undefined;
@@ -103,7 +103,7 @@ export class ExpeditionControls {
   constructor(
     scene: Phaser.Scene, map: TerrainMap, seed: number, round: ExpeditionRound, actions: ExpeditionActions,
   ) {
-    this.economy = new ExpeditionEconomy(map, seed, undefined, round.difficulty);
+    this.economy = new ExpeditionEconomy(map, seed, undefined, round.difficulty, actions.economyExperiment);
     this.challenge = round.difficulty === "challenge";
     this.checkPlacement = actions.checkPlacement;
     const events = new AbortController();
@@ -115,17 +115,21 @@ export class ExpeditionControls {
     field("expedition-debug").hidden = !actions.debug;
     this.showRound(round);
     if (this.challenge) this.showFeedback(CHALLENGE_OPENING_HINT);
-    this.makeCard.textContent = `制造卡牌（${ECONOMY_PROTOTYPE.drawCost} 经济）`;
     this.research.textContent = `研发 Lv.2 工具（${this.economy.researchCost} 经济）`;
     const technologyCost = this.economy.technologyBuildCost;
     write(this.rebuild, technologyCost === undefined ? "重建科技设施" : `建造科技设施（${technologyCost} 经济）`);
     if (technologyCost === undefined) this.rebuild.removeAttribute("aria-pressed");
     this.makeCard.addEventListener("click", () => {
       const before = this.economy.cards;
+      const cost = this.economy.drawCost;
       const card = this.finished ? undefined : this.economy.drawCard();
       if (card) {
         this.showDrawFeedback(card, before[card], this.economy.cards[card]);
-        if (this.status.textContent?.includes(FIRST_CARD_READY_HINT)) this.showFeedback("");
+        if (this.economy.drawCost !== cost) {
+          this.showFeedback(`下次制造费用升至 ${this.economy.drawCost} 经济`);
+        } else if (this.status.textContent?.includes(FIRST_CARD_READY_HINT)) {
+          this.showFeedback("");
+        }
       }
       this.refresh();
     }, options);
@@ -288,7 +292,7 @@ export class ExpeditionControls {
 
   refresh(): void {
     if (!this.selected) this.previewPlacement(null);
-    const { toolLevel, hasTechnology, balance } = this.economy;
+    const { toolLevel, hasTechnology, balance, drawCost } = this.economy;
     write(this.balance, this.challenge ? balance.toFixed(1) : String(balance));
     const cards = this.economy.cards;
     for (const [kind, button] of this.cards) {
@@ -305,7 +309,10 @@ export class ExpeditionControls {
     const drawFailure = this.finished ? "round-ended" : this.economy.drawFailure;
     const canDraw = drawFailure === undefined;
     if (this.makeCard.disabled === canDraw) this.makeCard.disabled = !canDraw;
-    write(this.drawReason, drawFailure ? DRAW_FAILURE_LABELS[drawFailure] : "");
+    write(this.makeCard, `制造卡牌（${drawCost} 经济）`);
+    write(this.drawReason, drawFailure === "insufficient-funds"
+      ? `经济不足，需要 ${drawCost} 经济`
+      : drawFailure ? DRAW_FAILURE_LABELS[drawFailure] : "");
     if (this.challenge && canDraw && !this.firstDrawReadyShown) {
       this.firstDrawReadyShown = true;
       this.showFeedback(FIRST_CARD_READY_HINT);

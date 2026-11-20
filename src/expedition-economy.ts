@@ -11,6 +11,11 @@ export type CardDrawFailure = "technology-missing" | "technology-destroyed" | "i
 export type TechnologyBuildFailure = "already-built" | "insufficient-funds";
 type CardCounts = Readonly<Record<CardKind, number>>;
 
+export interface EconomyExperiment {
+  readonly tieredCraft?: boolean;
+  readonly killDecay?: boolean;
+}
+
 export interface EconomyTotals {
   readonly balance: number;
   readonly killIncome: number;
@@ -56,7 +61,8 @@ export const TECHNOLOGY_PROTOTYPE = Object.freeze({ researchCost: DIFFICULTY_PRO
 const DRAW_SALT = 0x9e37_79b9;
 const DEFENSE_DRAW_SALT = 0xa511_e9b3;
 const DRAW_WEIGHT = CARD_KINDS.reduce((total, kind) => total + ECONOMY_PROTOTYPE.drawWeights[kind], 0);
-const DRAW_COST_TENTHS = toEconomyTenths(ECONOMY_PROTOTYPE.drawCost);
+const CRAFT_TIERS = Object.freeze({ middleAfter: 3, middleCost: 6, highestAfter: 8, highestCost: 9 });
+const KILL_DECAY = Object.freeze({ fullRewardKills: 8, reducedReward: 1 });
 
 function nextDrawState(state: number): number {
   return (Math.imul(state, 1_664_525) + 1_013_904_223) >>> 0;
@@ -68,6 +74,7 @@ export class ExpeditionEconomy {
   readonly #initialDefenseDrawState: number;
   readonly #fixedTechnologyCell: GridPosition;
   readonly #rules: DifficultyEconomy;
+  readonly #experiment: EconomyExperiment;
   #builtTechnology?: Building;
   #toolLevel: 1 | 2 = 1;
   #balanceTenths = 0;
@@ -76,14 +83,16 @@ export class ExpeditionEconomy {
   #hasDrawnDefense = false;
   #productionMs = new WeakMap<GridPosition, number>();
   readonly #rewardedKills = new Set<number>();
+  readonly #rewardedKillsByWave = new Map<number, number>();
   #totals = newTotals();
 
   constructor(
     map: TerrainMap, seed: number, technologyCell: GridPosition = ECONOMY_PROTOTYPE.technologyCell,
-    difficulty: DifficultyId = "baseline",
+    difficulty: DifficultyId = "baseline", experiment: EconomyExperiment = {},
   ) {
     this.#map = map;
     this.#rules = DIFFICULTY_PROFILES[difficulty].economy;
+    this.#experiment = difficulty === "challenge" ? { ...experiment } : {};
     this.#initialDrawState = (seed ^ DRAW_SALT) >>> 0;
     this.#initialDefenseDrawState = (seed ^ DEFENSE_DRAW_SALT) >>> 0;
     this.#fixedTechnologyCell = Object.freeze({ ...technologyCell });
@@ -113,6 +122,15 @@ export class ExpeditionEconomy {
     return this.#cards;
   }
 
+  get drawCost(): number {
+    if (this.#experiment.tieredCraft) {
+      const { cardsMade } = this.#totals;
+      if (cardsMade >= CRAFT_TIERS.highestAfter) return CRAFT_TIERS.highestCost;
+      if (cardsMade >= CRAFT_TIERS.middleAfter) return CRAFT_TIERS.middleCost;
+    }
+    return ECONOMY_PROTOTYPE.drawCost;
+  }
+
   get technologyBuildCost(): number | undefined { return this.#rules.technologyBuildCost; }
 
   get researchCost(): number { return this.#rules.researchCost; }
@@ -132,10 +150,16 @@ export class ExpeditionEconomy {
     return cell !== undefined && this.#map.getBuilding(cell)?.kind === "technology";
   }
 
-  handleEvent(event: DefenseEvent): number {
+  handleEvent(event: DefenseEvent, waveId?: number): number {
     if (event.type !== "towerKill" || this.#rewardedKills.has(event.enemyId)) return 0;
     this.#rewardedKills.add(event.enemyId);
-    const credit = ECONOMY_PROTOTYPE.towerKillReward;
+    let credit: number = ECONOMY_PROTOTYPE.towerKillReward;
+    if (this.#experiment.killDecay && waveId !== undefined) {
+      // Late kills consume the allowance of the wave that spawned the enemy.
+      const rewarded = this.#rewardedKillsByWave.get(waveId) ?? 0;
+      this.#rewardedKillsByWave.set(waveId, rewarded + 1);
+      if (rewarded >= KILL_DECAY.fullRewardKills) credit = KILL_DECAY.reducedReward;
+    }
     const creditTenths = toEconomyTenths(credit);
     this.#balanceTenths += creditTenths;
     this.#totals.killIncomeTenths += creditTenths;
@@ -168,11 +192,12 @@ export class ExpeditionEconomy {
     if (!this.hasTechnology) {
       return this.technologyBuildCost !== undefined && !this.#builtTechnology ? "technology-missing" : "technology-destroyed";
     }
-    return this.#balanceTenths < DRAW_COST_TENTHS ? "insufficient-funds" : undefined;
+    return this.#balanceTenths < toEconomyTenths(this.drawCost) ? "insufficient-funds" : undefined;
   }
 
   drawCard(): CardKind | undefined {
     if (this.drawFailure) return undefined;
+    const cost = toEconomyTenths(this.drawCost);
     // Each paid draw advances the regular stream, including a guaranteed result.
     this.#drawState = nextDrawState(this.#drawState);
     let ticket = Math.floor(this.#drawState / 0x1_0000_0000 * DRAW_WEIGHT);
@@ -183,9 +208,9 @@ export class ExpeditionEconomy {
       const granted = guarantee
         ? (nextDrawState(this.#initialDefenseDrawState) < 0x8000_0000 ? "wall" : "tower")
         : kind;
-      this.#balanceTenths -= DRAW_COST_TENTHS;
+      this.#balanceTenths -= cost;
       this.#totals.cardsMade += 1;
-      this.#totals.cardSpendTenths += DRAW_COST_TENTHS;
+      this.#totals.cardSpendTenths += cost;
       this.#hasDrawnDefense ||= granted === "wall" || granted === "tower";
       this.updateCards(granted, 1);
       return granted;
@@ -252,6 +277,7 @@ export class ExpeditionEconomy {
     this.#hasDrawnDefense = false;
     this.#productionMs = new WeakMap();
     this.#rewardedKills.clear();
+    this.#rewardedKillsByWave.clear();
     this.#totals = newTotals();
   }
 

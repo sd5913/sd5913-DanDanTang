@@ -21,6 +21,9 @@ import { runBiomeFogSmoke, runExpeditionSmoke, runResearchSmoke, runStrataSeedSm
 import { runFix02MapSmoke, runFix02DefenseSmoke, runFix02RoundSmoke, runSynthesisSmoke } from './browser-fix02.mjs';
 import { runLossSmoke, runVictorySmoke } from './browser-goal.mjs';
 import { runLongMapSmoke } from './browser-long-map.mjs';
+import { runMidgameProfilesSmoke, runCombinedVictorySmoke, runCombinedLossSmoke } from './browser-midgame.mjs';
+import { runMidgameCombatSmoke } from './browser-midgame-combat.mjs';
+import { runMidgameDecaySmoke, runMidgameTierLateSmoke, runMidgameTierSmoke } from './browser-midgame-economy.mjs';
 import { runTerminalMiningPreviewSmoke, runWideMiningPreviewSmoke } from './browser-mining-preview.mjs';
 import {
   runFirstWaveFacilitySmoke, runPressureAlertsSmoke, runPressureEconomySmoke, runPressureFirstWaveSmoke, runPressureForecastSmoke,
@@ -55,6 +58,8 @@ try {
       await runChallengeBrowserSmoke(browser, url, mode, true);
     } else if (process.argv.includes('--building-balance')) {
       await runBuildingBalanceBrowserSmoke(browser, url, mode);
+    } else if (process.argv.includes('--midgame')) {
+      await runMidgameBrowserSmoke(browser, url, mode);
     } else if (process.argv.includes('--pressure-outcomes')) {
       await runPressureOutcomesBrowserSmoke(browser, url, mode, true);
     } else if (process.argv.includes('--pressure-alerts')) {
@@ -103,6 +108,24 @@ async function runContactBrowserSmoke(browser, url, mode) {
   console.log(`Edge smoke (${mode}, first-wave facility contact): passed; ${JSON.stringify(wave)}; no browser errors.`);
   const retarget = await withSmokePage(browser, viewport, (page) => runEnemyRetargetSmoke(page, url));
   console.log(`Edge smoke (${mode}, enemy retarget): passed; ${JSON.stringify(retarget)}; no browser errors.`);
+}
+
+async function runMidgameBrowserSmoke(browser, url, mode) {
+  const viewport = { width: 1280, height: 900 };
+  const scenarios = [
+    ["profiles", runMidgameProfilesSmoke],
+    ["density", (page, baseUrl) => runMidgameCombatSmoke(page, baseUrl, "density")],
+    ["armor", (page, baseUrl) => runMidgameCombatSmoke(page, baseUrl, "armor")],
+    ["tier prices", runMidgameTierSmoke],
+    ["late tier price", runMidgameTierLateSmoke],
+    ["kill decay", runMidgameDecaySmoke],
+    ["Combined loss", runCombinedLossSmoke],
+    ["Combined victory", runCombinedVictorySmoke],
+  ];
+  for (const [name, run] of scenarios) {
+    const result = await withSmokePage(browser, viewport, (page) => run(page, url));
+    console.log(`Edge smoke (${mode}, midgame ${name}): passed; ${JSON.stringify(result)}; no browser errors.`);
+  }
 }
 
 async function runChallengeBrowserSmoke(browser, url, mode, full) {

@@ -26,7 +26,16 @@ export interface EnemyProfile {
   readonly contactDamage: number;
 }
 
+export type EnemyKind = "normal" | "armored";
+
+export interface WaveDeployment {
+  readonly intervalMs: number;
+  readonly burst?: { readonly count: number; readonly pauseMs: number };
+  readonly armor?: { readonly hp: number; readonly slots: readonly number[] };
+}
+
 const DEFAULT_ENEMY_PROFILE: EnemyProfile = { hp: DEFENSE_CONFIG.enemyHp, contactDamage: 1 };
+const DEFAULT_DEPLOYMENT: WaveDeployment = { intervalMs: DEFENSE_CONFIG.spawnIntervalMs };
 
 interface EnemyMove {
   readonly to: GridPosition;
@@ -37,6 +46,7 @@ interface EnemyMove {
 
 export interface EnemyState {
   readonly id: number;
+  readonly kind: EnemyKind;
   readonly spawnedAtMs: number;
   readonly waveId?: number;
   cell: GridPosition;
@@ -69,9 +79,12 @@ interface PlayerTarget {
 
 interface SpawnRequest {
   remaining: number;
+  released: number;
   readonly wallDamage: number;
   readonly profile: EnemyProfile;
   readonly waveId?: number;
+  readonly enqueuedAtMs: number;
+  readonly deployment: WaveDeployment;
 }
 
 export type DefenseEvent =
@@ -86,6 +99,7 @@ export type DefenseEvent =
 
 export interface DefenseEventMetadata {
   readonly waveId?: number;
+  readonly enemyKind: EnemyKind;
   readonly timeMs: number;
   readonly cell?: GridPosition;
   readonly contact?: PlayerContact & {
@@ -103,6 +117,20 @@ function newCounters() {
 
 function validSpawnRequest(count: number, wallDamage: number, { hp, contactDamage }: EnemyProfile): boolean {
   return [count, wallDamage, hp, contactDamage].every((value) => Number.isSafeInteger(value) && value > 0);
+}
+
+function validDeployment({ intervalMs, burst, armor }: WaveDeployment, count: number, normalHp: number): boolean {
+  if (!Number.isSafeInteger(intervalMs) || intervalMs <= 0) return false;
+  if (burst && (!Number.isSafeInteger(burst.count) || burst.count <= 0
+    || !Number.isSafeInteger(burst.pauseMs) || burst.pauseMs < intervalMs)) return false;
+  if (!armor) return true;
+  if (!Number.isSafeInteger(armor.hp) || armor.hp <= normalHp) return false;
+  let previous = -1;
+  for (const slot of armor.slots) {
+    if (!Number.isSafeInteger(slot) || slot <= previous || slot >= count) return false;
+    previous = slot;
+  }
+  return true;
 }
 
 export function sameCell(a: GridPosition, b: GridPosition): boolean {
@@ -162,9 +190,9 @@ export class DefenseSimulation {
   get searchCount(): number { return this.navigation.searchCount; }
   get searchTimeMs(): number { return this.navigation.searchTimeMs; }
   get elapsedMs(): number { return this.timeMs; }
-  get waveMetrics(): readonly WaveCombatSnapshot[] { return this.waveCombat.snapshots(); }
+  get waveMetrics(): readonly WaveCombatSnapshot[] { return this.waveCombat.snapshots(this.timeMs); }
 
-  getWaveMetrics(waveId: number): WaveCombatSnapshot | undefined { return this.waveCombat.snapshot(waveId); }
+  getWaveMetrics(waveId: number): WaveCombatSnapshot | undefined { return this.waveCombat.snapshot(waveId, this.timeMs); }
 
   finishAttackPhase(waveId: number, reason?: AttackEndReason): void {
     this.waveCombat.finishAttackPhase(waveId, this.timeMs, reason);
@@ -202,16 +230,21 @@ export class DefenseSimulation {
     return this.enqueue(count, wallDamage, profile);
   }
 
-  requestWave(waveId: number, order: WaveOrder): number {
+  requestWave(waveId: number, order: WaveOrder, deployment = DEFAULT_DEPLOYMENT): number {
     const { count, wallDamage, enemyHp: hp, contactDamage } = order;
     const profile = { hp, contactDamage };
-    if (!validSpawnRequest(count, wallDamage, profile) || !this.waveCombat.start(waveId, count, this.timeMs)) return 0;
-    return this.enqueue(count, wallDamage, profile, waveId);
+    if (!validSpawnRequest(count, wallDamage, profile) || !validDeployment(deployment, count, hp)
+      || !this.waveCombat.start(waveId, count, this.timeMs, deployment.intervalMs, deployment.armor?.slots.length ?? 0)) return 0;
+    return this.enqueue(count, wallDamage, profile, waveId, deployment);
   }
 
-  private enqueue(count: number, wallDamage: number, profile: EnemyProfile, waveId?: number): number {
+  private enqueue(count: number, wallDamage: number, profile: EnemyProfile, waveId?: number,
+    { intervalMs, burst, armor }: WaveDeployment = DEFAULT_DEPLOYMENT): number {
     this.requestedSpawns += count;
-    this.spawnQueue.push({ remaining: count, wallDamage, profile: { ...profile }, waveId });
+    this.spawnQueue.push({
+      remaining: count, released: 0, wallDamage, profile: { ...profile }, waveId, enqueuedAtMs: this.timeMs,
+      deployment: { intervalMs, burst: burst && { ...burst }, armor: armor && { hp: armor.hp, slots: [...armor.slots] } },
+    });
     this.releaseSpawn();
     return count;
   }
@@ -254,10 +287,11 @@ export class DefenseSimulation {
     this.releaseSpawn(target?.cell);
   }
 
-  private addEnemy(wallDamage: number, profile: EnemyProfile, waveId?: number, player?: GridPosition): void {
+  private addEnemy(wallDamage: number, profile: EnemyProfile, waveId?: number, player?: GridPosition,
+    kind: EnemyKind = "normal"): void {
     const id = this.nextEnemyId++;
     const enemy: EnemyState = {
-      id, spawnedAtMs: this.timeMs, cell: this.entry, point: cellCenter(this.entry),
+      id, kind, spawnedAtMs: this.timeMs, cell: this.entry, point: cellCenter(this.entry),
       hp: profile.hp, wallDamage, contactDamage: profile.contactDamage,
       unreachable: false, hasTargetedBuilding: false, contacted: false,
       ...(waveId === undefined ? {} : { waveId }),
@@ -265,7 +299,7 @@ export class DefenseSimulation {
     this.units.set(id, enemy);
     this.spawned += 1;
     if (waveId !== undefined) {
-      this.waveCombat.spawn(waveId, id, this.timeMs);
+      this.waveCombat.spawn(waveId, id, this.timeMs, kind);
       const point = enemyPosition(enemy);
       this.refreshDefenseAnchors();
       this.samplePosition(enemy, point, this.timeMs, 0, player);
@@ -274,13 +308,25 @@ export class DefenseSimulation {
 
   private releaseSpawn(player?: GridPosition): void {
     const request = this.spawnQueue[0];
-    if (!request || this.timeMs < this.nextSpawnAtMs || !this.map.isWalkable(this.entry) || this.occupies(this.entry)) return;
+    if (!request || this.timeMs < this.nextSpawnAtMs) return;
+    const walkable = this.map.isWalkable(this.entry);
+    if (!walkable || this.occupies(this.entry)) {
+      if (request.waveId !== undefined) {
+        this.waveCombat.recordEntryBlock(request.waveId, Math.max(this.nextSpawnAtMs, request.enqueuedAtMs), walkable);
+      }
+      return;
+    }
 
-    this.addEnemy(request.wallDamage, request.profile, request.waveId, player);
+    const { intervalMs, burst, armor } = request.deployment;
+    const armoredHp = armor?.slots.includes(request.released) ? armor.hp : undefined;
+    const profile = armoredHp === undefined ? request.profile : { ...request.profile, hp: armoredHp };
+    this.addEnemy(request.wallDamage, profile, request.waveId, player, armoredHp === undefined ? "normal" : "armored");
     request.remaining -= 1;
+    request.released += 1;
     if (request.remaining === 0) this.spawnQueue.shift();
+    const betweenBursts = burst && request.remaining > 0 && request.released % burst.count === 0;
     // Start the next interval at the actual release time so a blocked entry cannot cause a burst.
-    this.nextSpawnAtMs = this.timeMs + DEFENSE_CONFIG.spawnIntervalMs;
+    this.nextSpawnAtMs = this.timeMs + (betweenBursts ? burst.pauseMs : intervalMs);
   }
 
   private advanceEnemy(enemy: EnemyState, deltaMs: number, player?: PlayerTarget): void {
@@ -376,7 +422,7 @@ export class DefenseSimulation {
     this.counts.playerContacts += 1;
     this.waveCombat.resolve(enemy.id, "playerContacts", timeMs);
     this.emit({ type: "playerHit", enemyId: enemy.id, damage: enemy.contactDamage }, {
-      waveId: enemy.waveId, timeMs, cell,
+      waveId: enemy.waveId, enemyKind: enemy.kind, timeMs, cell,
       contact: { ...contact, enemyCell: enemy.cell, navigationTarget: enemy.targetKey, source: "enemy-body-contact" },
     });
   }
@@ -407,7 +453,7 @@ export class DefenseSimulation {
   }
 
   private emitFor(enemy: EnemyState, event: DefenseEvent, cell?: GridPosition): void {
-    this.emit(event, { waveId: enemy.waveId, timeMs: this.timeMs, cell });
+    this.emit(event, { waveId: enemy.waveId, enemyKind: enemy.kind, timeMs: this.timeMs, cell });
   }
 
   private chooseAction(enemy: Readonly<EnemyState>, player?: GridPosition): { target: Target; action: NavigationAction } {

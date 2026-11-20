@@ -19,10 +19,11 @@ const coords = ({ col, row }) => '(' + col + ', ' + row + ')';
 const now = (page) => page.evaluate(() => performance.now());
 const neighbors = ({ col, row }) => [cell(col, row - 1), cell(col - 1, row), cell(col + 1, row), cell(col, row + 1)];
 
-export async function openChallenge(page, baseUrl, seed, build) {
+export async function openChallenge(page, baseUrl, seed, build, experiment) {
   const layout = [...playFixture(seed).layout];
   const url = new URL('/?mode=play&difficulty=challenge&debug=1&seed=' + seed, baseUrl);
   if (build) url.searchParams.set('build', build);
+  if (experiment) url.searchParams.set('midgame', experiment);
   const game = await openWideGame(page, url.href, layout);
   const roundUrl = page.url();
   const maker = page.locator('#make-card');
@@ -40,6 +41,7 @@ export async function openChallenge(page, baseUrl, seed, build) {
     assert.deepEqual(await game.position(), GENERATED_SPAWN);
     assert.equal(await page.locator('#round-difficulty option:checked').textContent(), '挑战模式：从零开始');
     assert.equal(await page.locator('#challenge-balance').inputValue(), build ?? 'w25');
+    assert.equal(await page.locator('#midgame-experiment').inputValue(), experiment ?? 'control');
     assert.equal(await page.locator('#round-time-label').textContent(), '首波倒计时');
     assert.equal(await page.locator('#round-time').textContent(), '60 秒');
     assert.equal(await page.locator('#round-next-count').textContent(), '8 只');
@@ -231,13 +233,16 @@ export async function openChallenge(page, baseUrl, seed, build) {
     assert.ok(await maker.isEnabled());
     const before = await readCardInventory(page);
     const beforeCash = Number(await cash());
+    const displayedCost = (await maker.textContent()).match(/制造卡牌（(\d+) 经济）/);
+    assert.ok(displayedCost);
+    if (!experiment) assert.equal(Number(displayedCost[1]), ECONOMY_PROTOTYPE.drawCost);
     await maker.click();
     const kind = await page.locator('#card-draw-result').getAttribute('data-card');
     if (expected) assert.equal(kind, expected);
     await assertVisibleCardDraw(page, kind, before[kind]);
     assert.notEqual(await status.textContent(), firstReady, 'The first-afford cue must clear on purchase');
     assert.deepEqual(await readCardInventory(page), { ...before, [kind]: before[kind] + 1 });
-    assert.equal(Number(await cash()), beforeCash - ECONOMY_PROTOTYPE.drawCost);
+    assert.equal(Number(await cash()), beforeCash - Number(displayedCost[1]));
     return kind;
   }
 
@@ -414,9 +419,9 @@ export async function runChallengeTowerSmoke(page, baseUrl) {
     firstThreatMs: Math.round(first.firstThreatAtMs), balance: Number(await run.cash()), playerHp: state.hp };
 }
 
-export async function runChallengeLossSmoke(page, baseUrl) {
+export async function runChallengeLossSmoke(page, baseUrl, experiment) {
   const seed = 12;
-  const run = await openChallenge(page, baseUrl, seed);
+  const run = await openChallenge(page, baseUrl, seed, undefined, experiment);
   await run.game.walkVia(cell(21, 92), cell(21, 94), cell(26, 94));
   await startFirstWave(page, run.start);
   const loss = await advanceUntil(page, (state) => state.phase === 'lost', 'Unprotected player encounters the first wave', 4_000);
@@ -427,7 +432,7 @@ export async function runChallengeLossSmoke(page, baseUrl) {
   assert.equal(loss.combat[0].towerKills, 0);
   assert.equal(await run.cash(), '0.0');
   assert.deepEqual(await readCardInventory(page), emptyCards);
-  return { seed, case: 'no-defense', wave: loss.wave, firstDamageMs: Math.round(loss.combat[0].firstPlayerDamageAtMs), playerHp: loss.hp };
+  return { seed, experiment, case: 'no-defense', wave: loss.wave, firstDamageMs: Math.round(loss.combat[0].firstPlayerDamageAtMs), playerHp: loss.hp };
 }
 
 export async function runChallengePitySmoke(page, baseUrl) {
@@ -512,9 +517,9 @@ export async function runChallengeTechnologyRelocationSmoke(page, baseUrl) {
   return { seed, oldSite, replacement: shelteredSite, attackWave: attack.wave, remainingHp };
 }
 
-export async function runChallengeVictorySmoke(page, baseUrl, build = 'control') {
+export async function runChallengeVictorySmoke(page, baseUrl, build = 'control', experiment) {
   const seed = 12;
-  const run = await openChallenge(page, baseUrl, seed, build);
+  const run = await openChallenge(page, baseUrl, seed, build, experiment);
   const gate = cell(19, 83);
   const northFacility = cell(18, 82);
   const routeStart = cell(19, 79);
@@ -577,6 +582,6 @@ export async function runChallengeVictorySmoke(page, baseUrl, build = 'control')
   assert.equal(victory.phase, 'won');
   assert.ok(victory.wave > 0, 'The expedition must win under real attack timing');
   assert.ok(victory.hp > 0);
-  return { seed, profile: build, hp: victory.hp, wave: victory.wave, gate, routeSteps: route.length - 1,
+  return { seed, profile: build, experiment, hp: victory.hp, wave: victory.wave, gate, routeSteps: route.length - 1,
     openingCards, towerKills: victory.combat.reduce((sum, wave) => sum + wave.towerKills, 0) };
 }

@@ -4,7 +4,7 @@ import type { BuildingBalanceId } from "./building-balance.ts";
 import { overlapsCell, placementFailure } from "./build-placement.ts";
 import type { PlacementFailure, PlacementPreview } from "./build-placement.ts";
 import { DefenseSimulation, enemyWorldPosition, sameCell } from "./defense-simulation.ts";
-import type { DefenseEvent, DefenseEventMetadata } from "./defense-simulation.ts";
+import type { DefenseEvent, DefenseEventMetadata, EnemyKind } from "./defense-simulation.ts";
 import { ENEMY_RADIUS } from "./enemy-contact.ts";
 import type { Building, BuildingKind } from "./buildings.ts";
 import { BUILDING_NAMES, ExpeditionControls } from "./expedition-controls.ts";
@@ -13,6 +13,8 @@ import type { DifficultyId } from "./expedition-difficulty.ts";
 import { ExpeditionRound } from "./expedition-round.ts";
 import type { RoundSpeed } from "./expedition-round.ts";
 import type { BiomeId } from "./expedition-biomes.ts";
+import { MIDGAME_EXPERIMENTS, waveDeployment } from "./midgame-experiments.ts";
+import type { MidgameExperimentId } from "./midgame-experiments.ts";
 import { cellCenter, TILE_SIZE, worldToCell } from "./player.ts";
 import type { Player, Point } from "./player.ts";
 import type { GridPosition, TerrainMap } from "./terrain.ts";
@@ -62,6 +64,7 @@ export interface DefenseScenario {
   readonly roundSpeed?: RoundSpeed;
   readonly difficulty?: DifficultyId;
   readonly buildingBalance?: BuildingBalanceId;
+  readonly midgame?: MidgameExperimentId;
   readonly debugControls?: boolean;
 }
 
@@ -69,6 +72,7 @@ export class DefenseDebug {
   private readonly map: TerrainMap;
   private readonly player: Player;
   private readonly scenario: DefenseScenario;
+  private readonly midgame: MidgameExperimentId;
   private readonly isVisible: (cell: GridPosition) => boolean;
   private readonly simulation: DefenseSimulation;
   private readonly graphics: Phaser.GameObjects.Graphics;
@@ -89,7 +93,7 @@ export class DefenseDebug {
   private readonly round?: ExpeditionRound;
   private readonly economyHistory?: WaveEconomyHistory;
   private shots: { readonly event: Shot; readonly expires: number }[] = [];
-  private hitMarkers: { readonly world: Point; readonly expires: number }[] = [];
+  private hitMarkers: { readonly world: Point; readonly kind: EnemyKind; readonly expires: number }[] = [];
   private readonly pendingContacts: HitTrace[] = [];
   private readonly contactRecords: unknown[] = [];
   private timeMs = 0;
@@ -102,6 +106,7 @@ export class DefenseDebug {
     this.map = map;
     this.player = player;
     this.scenario = scenario;
+    this.midgame = scenario.difficulty === "challenge" ? scenario.midgame ?? "control" : "control";
     this.isVisible = isVisible;
     this.simulation = new DefenseSimulation(
       map, scenario.entry, scenario.target, (event, metadata) => this.onEvent(event, metadata), scenario.worldSeed !== undefined,
@@ -112,6 +117,7 @@ export class DefenseDebug {
       this.round = new ExpeditionRound(scenario.roundSpeed, scenario.difficulty);
       this.expedition = new ExpeditionControls(scene, map, scenario.worldSeed, this.round, {
         debug: scenario.debugControls === true,
+        economyExperiment: MIDGAME_EXPERIMENTS[this.midgame].economy,
         spawnEnemy: () => this.spawnPrototypeEnemy(),
         spawnStress: (count) => this.spawnStress(count),
         checkPlacement: (cell, kind) => this.checkPlacement(cell, kind),
@@ -148,7 +154,12 @@ export class DefenseDebug {
       const wave = this.round.update(elapsed, this.player.cell.row, spawned - removed, pending);
       if (wave) {
         this.economyHistory?.startWave(this.round.wave, this.expedition.economy.totals);
-        this.simulation.requestWave(this.round.wave, wave);
+        const deployment = this.scenario.worldSeed !== undefined
+          ? waveDeployment(this.midgame, this.round.wave, {
+              seed: this.scenario.worldSeed, stage: this.round.stage, count: wave.count,
+            })
+          : undefined;
+        this.simulation.requestWave(this.round.wave, wave, deployment);
       }
       if (phase === "attacking" && this.round.phase === "recovering") {
         this.simulation.finishAttackPhase(this.round.wave, spawned === removed && pending === 0 ? "resolved" : "time-limit");
@@ -209,7 +220,7 @@ export class DefenseDebug {
       const world = enemyWorldPosition(enemy);
       if (!this.enemyVisibility(world, view).drawn) continue;
       visible += 1;
-      this.drawEnemyDot(world);
+      this.drawEnemyDot(world, enemy.kind);
     }
     this.renderPlayerContacts(view);
 
@@ -362,7 +373,7 @@ export class DefenseDebug {
   }
 
   private onEvent(event: DefenseEvent, metadata: DefenseEventMetadata): void {
-    const credit = this.expedition?.economy.handleEvent(event) ?? 0;
+    const credit = this.expedition?.economy.handleEvent(event, metadata.waveId) ?? 0;
     this.economyHistory?.creditKill(metadata.waveId, credit);
     if (event.type === "towerShot") this.shots.push({ event, expires: this.timeMs + SHOT_VISIBLE_MS });
     if (event.type === "wallImpact") {
@@ -379,7 +390,8 @@ export class DefenseDebug {
       this.simulation.recordPlayerDamage(metadata.waveId, damage, metadata.timeMs);
       if (metadata.contact && metadata.cell) {
         const { enemyWorld } = metadata.contact;
-        this.hitMarkers.push({ world: enemyWorld, expires: this.graphics.scene.time.now + HIT_MARKER_MS });
+        this.hitMarkers.push({ world: enemyWorld, kind: metadata.enemyKind ?? "normal",
+          expires: this.graphics.scene.time.now + HIT_MARKER_MS });
         if (this.scenario.debugControls) {
           this.pendingContacts.push({ ...metadata.contact, enemyId: event.enemyId, timeMs: metadata.timeMs,
             hpBefore: previousHp, hpAfter: this.round.playerHp, playerCell: metadata.cell });
@@ -396,16 +408,17 @@ export class DefenseDebug {
     return { cameraVisible, fogVisible, drawn: cameraVisible && fogVisible };
   }
 
-  private drawEnemyDot({ x, y }: Point): void {
-    this.graphics.fillStyle(0xec817a).fillCircle(x, y, ENEMY_RADIUS);
+  private drawEnemyDot({ x, y }: Point, kind: EnemyKind): void {
+    this.graphics.fillStyle(kind === "armored" ? 0xe2b365 : 0xec817a).fillCircle(x, y, ENEMY_RADIUS);
     this.graphics.lineStyle(1, 0x582c35).strokeCircle(x, y, ENEMY_RADIUS);
+    if (kind === "armored") this.graphics.lineStyle(1.5, 0x3b3321).strokeCircle(x, y, ENEMY_RADIUS - 2.5);
   }
 
   private renderPlayerContacts(view: Phaser.Geom.Rectangle): void {
     const now = this.graphics.scene.time.now;
     this.hitMarkers = this.hitMarkers.filter(({ expires }) => expires > now);
-    for (const { world } of this.hitMarkers) {
-      if (this.enemyVisibility(world, view).drawn) this.drawEnemyDot(world);
+    for (const { world, kind } of this.hitMarkers) {
+      if (this.enemyVisibility(world, view).drawn) this.drawEnemyDot(world, kind);
     }
     if (this.pendingContacts.length === 0) return;
     const camera = this.graphics.scene.cameras.main;

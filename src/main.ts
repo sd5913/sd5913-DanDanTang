@@ -9,6 +9,7 @@ import {
   GENERATED_ENEMY_ENTRY, GENERATED_GOAL, generateExpeditionWorld,
 } from "./generated-map.ts";
 import { LONG_MAP_LAYOUT } from "./long-map.ts";
+import { MIDGAME_EXPERIMENTS, readMidgameExperiment } from "./midgame-experiments.ts";
 import { GridScene } from "./scene.ts";
 import { MAP_COLUMNS, MAP_ROWS } from "./terrain.ts";
 import { TILE_SIZE } from "./player.ts";
@@ -21,6 +22,7 @@ const defense = params.get("mode") === "defense";
 const play = params.get("mode") === "play";
 const difficulty = readDifficulty(params.get("difficulty"));
 const buildingBalance = difficulty === "challenge" ? readBuildingBalance(params.get("build")) : "control";
+const midgame = difficulty === "challenge" ? readMidgameExperiment(params.get("midgame")) : "control";
 const speed = params.get("speed");
 const fixture = params.get("map");
 const wide = play || (fixture !== "fix01" && (defense || (fixture !== "single" && fixture !== "regression")));
@@ -49,6 +51,7 @@ const defenseOptions = play && world
       roundSpeed: speed === "wait-test" ? "wait-test" as const : speed === "test",
       difficulty,
       buildingBalance,
+      midgame,
       debugControls: params.get("debug") === "1",
     }
   : !defense ? undefined : wide
@@ -69,7 +72,10 @@ if (play) {
     const url = new URL(window.location.href);
     if (select.value === "baseline") url.searchParams.delete("difficulty");
     else url.searchParams.set("difficulty", select.value);
-    if (select.value !== "challenge") url.searchParams.delete("build");
+    if (select.value !== "challenge") {
+      url.searchParams.delete("build");
+      url.searchParams.delete("midgame");
+    }
     window.location.assign(url);
   });
   if (difficulty === "challenge") {
@@ -83,6 +89,18 @@ if (play) {
     balanceSelect.addEventListener("change", () => {
       const url = new URL(window.location.href);
       url.searchParams.set("build", balanceSelect.value);
+      window.location.assign(url);
+    });
+    const midgameSelect = document.querySelector<HTMLSelectElement>("#midgame-experiment")!;
+    for (const [id, experiment] of Object.entries(MIDGAME_EXPERIMENTS)) {
+      midgameSelect.add(new Option(experiment.label, id));
+    }
+    midgameSelect.value = midgame;
+    document.getElementById("midgame-experiment-controls")!.hidden = false;
+    midgameSelect.addEventListener("change", () => {
+      const url = new URL(window.location.href);
+      if (midgameSelect.value === "control") url.searchParams.delete("midgame");
+      else url.searchParams.set("midgame", midgameSelect.value);
       window.location.assign(url);
     });
   }

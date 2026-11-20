@@ -8,6 +8,7 @@ import { ExpeditionRound } from "../src/expedition-round.ts";
 import { addExpeditionApproach, addExpeditionTiers, PLAY_GENERATOR_VERSION } from "../src/expedition-terrain.ts";
 import { ExplorationFog } from "../src/fog.ts";
 import { DEFAULT_MAP_SEED, GENERATED_ENEMY_ENTRY, GENERATED_GOAL, generateExpeditionWorld } from "../src/generated-map.ts";
+import { MIDGAME_EXPERIMENTS, waveDeployment } from "../src/midgame-experiments.ts";
 import { MINING_CONFIG } from "../src/mining-config.ts";
 import { MiningSession } from "../src/mining.ts";
 import { cellCenter, Player } from "../src/player.ts";
@@ -83,15 +84,16 @@ function initialOre(map) {
 }
 
 export class OpeningRun {
-  constructor(seed, difficulty = "challenge", buildingBalance = "control") {
+  constructor(seed, difficulty = "challenge", buildingBalance = "control", experiment = "control") {
     const { map, effectiveSeed, fingerprint } = createPlayTerrain(seed, buildingBalance);
     this.seed = seed;
     this.effectiveSeed = effectiveSeed;
     this.fingerprint = fingerprint;
     this.difficulty = difficulty;
+    this.experiment = difficulty === "challenge" ? experiment : "control";
     this.now = 0;
     this.map = map;
-    this.economy = new ExpeditionEconomy(this.map, effectiveSeed, undefined, difficulty);
+    this.economy = new ExpeditionEconomy(this.map, effectiveSeed, undefined, difficulty, MIDGAME_EXPERIMENTS[this.experiment].economy);
     this.round = new ExpeditionRound(false, difficulty);
     this.player = new Player(this.map.spawn);
     this.fog = new ExplorationFog(this.map.columns, this.map.rows);
@@ -116,7 +118,7 @@ export class OpeningRun {
       if (["playerHit", "wallImpact", "buildingHit", "towerShot", "towerKill"].includes(event.type)) {
         this.combatEvents.push({ ...event, waveId: metadata.waveId, atMs: metadata.timeMs });
       }
-      const credit = this.economy.handleEvent(event);
+      const credit = this.economy.handleEvent(event, metadata.waveId);
       this.history.creditKill(metadata.waveId, credit);
       if (event.type === "playerHit") {
         const hp = this.round.playerHp;
@@ -161,7 +163,10 @@ export class OpeningRun {
         atMs: this.now, order, economy: this.economicState(), playerCell: this.player.cell,
       });
       this.history.startWave(this.round.wave, this.economy.totals);
-      assert.equal(this.simulation.requestWave(this.round.wave, order), order.count);
+      const deployment = waveDeployment(this.experiment, this.round.wave, {
+        seed: this.effectiveSeed, stage: this.round.stage, count: order.count,
+      });
+      assert.equal(this.simulation.requestWave(this.round.wave, order, deployment), order.count);
     }
     if (phase === "attacking" && this.round.phase === "recovering") {
       this.simulation.finishAttackPhase(this.round.wave, active === 0 && pending === 0 ? "resolved" : "time-limit");
@@ -244,13 +249,13 @@ export class OpeningRun {
     });
   }
 
-  mineToIncome(tenths, pauseMs = 0, deadlineMs = Infinity) {
+  mineToIncome(tenths, pauseMs = 0, deadlineMs = Infinity, accept = () => true) {
     assert.equal(this.difficulty, "challenge");
     while (toEconomyTenths(this.economy.totals.miningIncome) < tenths && !this.finished && this.now < deadlineMs) {
       const choices = [];
       for (const origin of reachable(this.map, this.player.cell).queue) {
         for (const target of adjacent(origin.cell)) {
-          if (!isStarterOre(this.map, target)) continue;
+          if (!isStarterOre(this.map, target) || !accept(target)) continue;
           choices.push({ origin, target });
         }
       }
