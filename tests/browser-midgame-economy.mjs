@@ -51,9 +51,9 @@ export async function runMidgameTierSmoke(page, baseUrl) {
     failedPurchaseUndebited: true, resetPrice: 3, newRoundPrice: 3 };
 }
 
-export async function preparePaidTowers(page, baseUrl, experiment, columns, merge = false) {
+export async function fundFourTowerCards(page, baseUrl, experiment, options) {
   const seed = 515;
-  const run = await openChallenge(page, baseUrl, seed, 'w25', experiment);
+  const run = await openChallenge(page, baseUrl, seed, 'w25', experiment, options);
   const route = new OpeningRun(seed, 'challenge', 'w25');
   let appliedMining = 0;
   async function followMiningPlan() {
@@ -69,7 +69,7 @@ export async function preparePaidTowers(page, baseUrl, experiment, columns, merg
   await followMiningPlan();
   await run.returnTo(route.facility.from);
   await run.buildTechnology(route.facility.target);
-  const prices = experiment === 'tier' ? [3, 3, 3, 6] : [3, 3, 3, 3];
+  const prices = experiment === 'tier' || experiment === 'combined' ? [3, 3, 3, 6] : [3, 3, 3, 3];
   for (const price of prices) {
     preparationSpendTenths += price * 10;
     assert.ok(route.mineToIncome(preparationSpendTenths));
@@ -78,6 +78,11 @@ export async function preparePaidTowers(page, baseUrl, experiment, columns, merg
     await run.draw('tower');
   }
   assert.equal(await run.cash(), '0.0');
+  return run;
+}
+
+export async function preparePaidTowers(page, baseUrl, experiment, columns, merge = false, options) {
+  const run = await fundFourTowerCards(page, baseUrl, experiment, options);
   for (const [index, col] of columns.entries()) {
     await run.returnTo(cell(col, 92));
     await run.place('tower', cell(col, 91), { merge: merge && index === columns.length - 1 });
@@ -85,8 +90,8 @@ export async function preparePaidTowers(page, baseUrl, experiment, columns, merg
   return run;
 }
 
-async function placePaidMergedTower(page, baseUrl, experiment) {
-  const run = await preparePaidTowers(page, baseUrl, experiment, [25, 26, 27, 28], true);
+export async function placePaidMergedTower(page, baseUrl, experiment, options) {
+  const run = await preparePaidTowers(page, baseUrl, experiment, [25, 26, 27, 28], true, options);
   await run.returnTo(cell(25, 92));
   await run.game.inspect(cell(25, 91), '空地');
   await page.clock.runFor(32);

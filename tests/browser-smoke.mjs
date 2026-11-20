@@ -1,7 +1,5 @@
 import assert from 'node:assert/strict';
-import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright-core';
-import { createServer, preview } from 'vite';
 import { MINING_CONFIG } from '../src/mining-config.ts';
 import { TerrainMap } from '../src/terrain.ts';
 import { runBuildDebugIsolationSmoke, runBuildRangeSmoke } from './browser-build-range.mjs';
@@ -30,32 +28,36 @@ import {
   runPressureOutcomeSmoke, runPressurePlayerContactSmoke, runPressureProfileSelectionSmoke, runPressureQueueRolloverSmoke,
 } from './browser-pressure.mjs';
 import { runEnemyRetargetSmoke } from './browser-retarget.mjs';
+import { openBrowserTestServer } from './browser-regression-server.mjs';
+import { runEvolvedTowerCombatSmoke } from './browser-tower-evolution.mjs';
 
-const host = '127.0.0.1';
-const root = fileURLToPath(new URL('..', import.meta.url));
 const development = process.argv.includes('--dev');
+const playtest = process.argv.includes('--playtest');
 const map = new TerrainMap();
-const server = development
-  ? await createServer({ root, server: { host, port: 0, strictPort: true } })
-  : await preview({ root, preview: { host, port: 0, strictPort: true } });
+const { url, close } = await openBrowserTestServer({ development, playtest });
 
 try {
-  if (development) await server.listen();
-
-  const address = server.httpServer?.address();
-  assert.ok(address && typeof address === 'object', 'Vite did not bind a TCP port');
   const browser = await chromium.launch({ channel: 'msedge' });
 
   try {
-    const url = `http://${host}:${address.port}`;
-    const mode = development ? 'dev' : 'production';
-    if (process.argv.includes('--directional-mining')) {
+    const mode = development ? 'dev regression' : 'compiled regression';
+    if (playtest) {
+      const { runPlaytestSmoke, runPlaytestCombinedEconomySmoke } = await import('./browser-playtest.mjs');
+      for (const [name, run] of [
+        ['unified playtest', runPlaytestSmoke], ['unified economy', runPlaytestCombinedEconomySmoke],
+      ]) {
+        const result = await withSmokePage(browser, { width: 1280, height: 900 }, (page) => run(page, url));
+        console.log(`Edge smoke (production, ${name}): passed; ${JSON.stringify(result)}; no browser errors.`);
+      }
+    } else if (process.argv.includes('--directional-mining')) {
       await withSmokePage(browser, { width: 1440, height: 1060 },
         (page) => runSingleMapSmoke(page, url + '/?map=single', { directionalOnly: true }));
       console.log(`Edge smoke (${mode}, directional mining): passed; queued out-of-range aiming, amber Canvas outlines, locked strikes, stationary-pointer turns, key order and cancellation, cooldown, release, and blur verified; no browser errors.`);
       await runWideMiningPreviewBrowserSmoke(browser, url, mode);
     } else if (process.argv.includes('--challenge')) {
       await runChallengeBrowserSmoke(browser, url, mode, true);
+    } else if (process.argv.includes('--tower-evolution')) {
+      await runTowerEvolutionBrowserSmoke(browser, url, mode);
     } else if (process.argv.includes('--building-balance')) {
       await runBuildingBalanceBrowserSmoke(browser, url, mode);
     } else if (process.argv.includes('--midgame')) {
@@ -92,12 +94,21 @@ try {
       await runCardFeedbackBrowserSmoke(browser, url, mode);
       await runBuildRangeBrowserSmoke(browser, url, mode);
       await runChallengeBrowserSmoke(browser, url, mode, false);
+      await runTowerEvolutionBrowserSmoke(browser, url, mode);
     }
   } finally {
     await browser.close();
   }
 } finally {
-  await server.close();
+  await close();
+}
+
+async function runTowerEvolutionBrowserSmoke(browser, url, mode) {
+  const viewport = { width: 1280, height: 900 };
+  for (const kind of ['piercing', 'burst']) {
+    const result = await withSmokePage(browser, viewport, (page) => runEvolvedTowerCombatSmoke(page, url, kind));
+    console.log(`Edge smoke (${mode}, ${kind} evolution): passed; ${JSON.stringify(result)}; no browser errors.`);
+  }
 }
 
 async function runContactBrowserSmoke(browser, url, mode) {

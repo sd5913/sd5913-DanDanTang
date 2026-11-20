@@ -1,5 +1,5 @@
 import type Phaser from "phaser";
-import type { BuildingKind } from "./buildings.ts";
+import type { BuildingKind, BuildingSynthesisPreview, TowerEvolution } from "./buildings.ts";
 import { BIOME_NAMES } from "./biome-effects.ts";
 import type { PlacementFailure, PlacementPreview } from "./build-placement.ts";
 import type { BiomeId } from "./expedition-biomes.ts";
@@ -11,6 +11,16 @@ import type { GridPosition, TerrainMap } from "./terrain.ts";
 export const BUILDING_NAMES: Record<BuildingKind, string> = {
   wall: "城墙", tower: "防御塔", economy: "经济建筑", technology: "科技设施",
 };
+
+export function evolutionName(evolution: TowerEvolution): string {
+  return evolution.kind === "piercing" ? "Piercing Tower Lv.2" : "Burst Tower Lv.2";
+}
+
+export function evolutionDirection(evolution: TowerEvolution): string {
+  return evolution.kind === "burst" ? "范围爆裂" : evolution.axis === "horizontal" ? "横向穿透" : "纵向穿透";
+}
+
+function cellCoordinates({ col, row }: GridPosition): string { return `(${col}, ${row})`; }
 
 function field<T extends HTMLElement = HTMLElement>(id: string): T {
   const element = document.getElementById(id);
@@ -67,6 +77,14 @@ export class ExpeditionControls {
   readonly economy: ExpeditionEconomy;
   private readonly checkPlacement: ExpeditionActions["checkPlacement"];
   private readonly challenge: boolean;
+  private readonly map: TerrainMap;
+  private preview?: {
+    readonly revision: number;
+    readonly target: GridPosition;
+    readonly synthesis?: BuildingSynthesisPreview;
+    readonly label?: string;
+  };
+  private activeSynthesis?: BuildingSynthesisPreview;
   private firstDrawReadyShown = false;
   private firstTechnologyReadyShown = false;
   private selected?: PlacementKind;
@@ -103,6 +121,7 @@ export class ExpeditionControls {
   constructor(
     scene: Phaser.Scene, map: TerrainMap, seed: number, round: ExpeditionRound, actions: ExpeditionActions,
   ) {
+    this.map = map;
     this.economy = new ExpeditionEconomy(map, seed, undefined, round.difficulty, actions.economyExperiment);
     this.challenge = round.difficulty === "challenge";
     this.checkPlacement = actions.checkPlacement;
@@ -192,6 +211,7 @@ export class ExpeditionControls {
 
   previewPlacement(cell: GridPosition | null): PlacementPreview | undefined {
     const { placementPreview } = this;
+    this.activeSynthesis = undefined;
     if (!cell || !this.selected) {
       if (!placementPreview.hidden) {
         placementPreview.hidden = true;
@@ -207,10 +227,27 @@ export class ExpeditionControls {
     if (placementPreview.dataset.state !== state) placementPreview.dataset.state = state;
     if (reason && placementPreview.dataset.reason !== reason) placementPreview.dataset.reason = reason;
     if (!reason && placementPreview.dataset.reason) delete placementPreview.dataset.reason;
-    write(placementPreview, reason ? PLACEMENT_FAILURE_LABELS[reason] : `可建造${BUILDING_NAMES[this.selected]}`);
+    let label = reason ? PLACEMENT_FAILURE_LABELS[reason] : `可建造${BUILDING_NAMES[this.selected]}`;
+    if (!reason && this.selected === "tower") {
+      const previous = this.preview;
+      if (previous?.revision !== this.map.revision || previous.target.col !== cell.col || previous.target.row !== cell.row) {
+        const synthesis = this.map.previewBuildingSynthesis("tower", cell);
+        const evolution = synthesis?.evolution;
+        const forecast = evolution ? `将合成 ${evolutionName(evolution)} · ${evolutionDirection(evolution)}`
+          + ` · 保留 ${cellCoordinates(synthesis.retained)} · 释放 ${synthesis.released.map(cellCoordinates).join("、")}` : undefined;
+        this.preview = { revision: this.map.revision, target: cell, synthesis, label: forecast };
+      }
+      if (this.preview?.label) {
+        this.activeSynthesis = this.preview.synthesis;
+        label = this.preview.label;
+      }
+    }
+    write(placementPreview, label);
     if (placementPreview.hidden) placementPreview.hidden = false;
     return state;
   }
+
+  get synthesisPreview(): BuildingSynthesisPreview | undefined { return this.activeSynthesis; }
 
   placeSelected(cell: GridPosition): boolean {
     const selected = this.selected;
@@ -233,8 +270,12 @@ export class ExpeditionControls {
       return true;
     }
     const name = BUILDING_NAMES[selected];
-    const position = `(${building.cell.col}, ${building.cell.row})`;
-    this.showFeedback(building.level === 2 ? `已合成${name} Lv.2 ${position}` : `已建造${name} ${position}`);
+    const position = cellCoordinates(building.cell);
+    if (building.evolution) {
+      this.showFeedback(`已合成 ${evolutionName(building.evolution)} ${position} · ${evolutionDirection(building.evolution)}`);
+    } else {
+      this.showFeedback(building.level === 2 ? `已合成${name} Lv.2 ${position}` : `已建造${name} ${position}`);
+    }
     const after = this.economy.cards[selected];
     write(this.placementCost, `消耗：${name}卡 ×${before - after} · 库存：${before} → ${after}`);
     this.selected = undefined;

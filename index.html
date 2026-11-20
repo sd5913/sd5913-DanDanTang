@@ -14,6 +14,7 @@
         <div class="round-controls">
           <p id="map-size"></p>
           <button id="new-round" type="button" hidden>新开一局</button>
+          <button id="retry-round" type="button" hidden>重试当前种子</button>
         </div>
       </header>
 
@@ -50,7 +51,7 @@
 
           <section id="round-panel" aria-labelledby="round-title" hidden>
             <h2 id="round-title">对局</h2>
-            <label class="defense-controls">实验难度 <select id="round-difficulty"></select></label>
+            <label id="round-difficulty-controls" class="defense-controls" hidden>实验难度 <select id="round-difficulty"></select></label>
             <label id="challenge-balance-controls" class="defense-controls" hidden>建筑实验 <select id="challenge-balance"></select></label>
             <label id="midgame-experiment-controls" class="defense-controls" hidden>中后期实验 <select id="midgame-experiment"></select></label>
             <p id="round-state" aria-live="polite"></p>
@@ -75,6 +76,7 @@
               <button id="card-tower" type="button" aria-pressed="false"></button>
               <button id="card-economy" type="button" aria-pressed="false"></button>
             </div>
+            <p id="build-preview" class="build-preview" role="status" hidden></p>
             <p id="card-placement-cost" class="card-placement-cost" role="status"></p>
             <div class="defense-controls">
               <button id="make-card" type="button" aria-describedby="card-draw-reason">制造卡牌</button>
@@ -101,7 +103,6 @@
             <p id="expedition-building">—</p>
             <p id="expedition-building-stats" hidden></p>
             <p id="expedition-feedback" class="dig-result" aria-live="polite">请选择建筑卡，或按住左键挖掘</p>
-            <p id="build-preview" class="build-preview" role="status" hidden></p>
           </section>
 
           <section id="defense-panel" aria-labelledby="defense-title" hidden>

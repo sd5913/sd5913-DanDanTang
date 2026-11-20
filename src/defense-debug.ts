@@ -1,13 +1,13 @@
 import Phaser from "phaser";
-import { productionAttributes, towerAttributes } from "./building-balance.ts";
+import { evolvedTowerAttributes, productionAttributes, towerAttributes } from "./building-balance.ts";
 import type { BuildingBalanceId } from "./building-balance.ts";
 import { overlapsCell, placementFailure } from "./build-placement.ts";
 import type { PlacementFailure, PlacementPreview } from "./build-placement.ts";
 import { DefenseSimulation, enemyWorldPosition, sameCell } from "./defense-simulation.ts";
-import type { DefenseEvent, DefenseEventMetadata, EnemyKind } from "./defense-simulation.ts";
+import type { DefenseEvent, DefenseEventMetadata, EnemyKind, TowerEffect } from "./defense-simulation.ts";
 import { ENEMY_RADIUS } from "./enemy-contact.ts";
-import type { Building, BuildingKind } from "./buildings.ts";
-import { BUILDING_NAMES, ExpeditionControls } from "./expedition-controls.ts";
+import type { Building, BuildingKind, BuildingSynthesisPreview, TowerEvolution } from "./buildings.ts";
+import { BUILDING_NAMES, evolutionDirection, evolutionName, ExpeditionControls } from "./expedition-controls.ts";
 import type { CardKind } from "./expedition-economy.ts";
 import type { DifficultyId } from "./expedition-difficulty.ts";
 import { ExpeditionRound } from "./expedition-round.ts";
@@ -26,6 +26,7 @@ const ATTACK_NOTICE_COOLDOWN_MS = 3_000;
 const BREACH_NOTICE_MS = 4_500;
 const HIT_MARKER_MS = 160;
 const MAX_CONTACT_RECORDS = 24;
+const MAX_TOWER_EFFECT_RECORDS = 12;
 
 function field<T extends HTMLElement = HTMLElement>(id: string): T {
   const element = document.getElementById(id);
@@ -47,7 +48,8 @@ function relativeDirection(player: GridPosition, building: GridPosition): string
   return dx > 0 ? "东侧" : "西侧";
 }
 
-type Shot = Extract<DefenseEvent, { type: "towerShot" }>;
+type Shot = Extract<DefenseEvent, { type: "towerShot" | "towerEffect" }>;
+type TowerEffectTrace = { readonly timeMs: number } & Omit<Extract<Shot, { type: "towerEffect" }>, "type">;
 type HitTrace = NonNullable<DefenseEventMetadata["contact"]> & {
   readonly timeMs: number;
   readonly enemyId: number;
@@ -66,6 +68,7 @@ export interface DefenseScenario {
   readonly buildingBalance?: BuildingBalanceId;
   readonly midgame?: MidgameExperimentId;
   readonly debugControls?: boolean;
+  readonly towerEvolution?: boolean;
 }
 
 export class DefenseDebug {
@@ -94,6 +97,8 @@ export class DefenseDebug {
   private readonly economyHistory?: WaveEconomyHistory;
   private shots: { readonly event: Shot; readonly expires: number }[] = [];
   private hitMarkers: { readonly world: Point; readonly kind: EnemyKind; readonly expires: number }[] = [];
+  private readonly towerEffectTrace: TowerEffectTrace[] = [];
+  private readonly evolvedShots = { piercing: 0, burst: 0 };
   private readonly pendingContacts: HitTrace[] = [];
   private readonly contactRecords: unknown[] = [];
   private timeMs = 0;
@@ -188,7 +193,11 @@ export class DefenseDebug {
         graphics.lineStyle(1, 0xecc69b).strokeRect(x - 10, y - 10, 20, 20);
         this.wallLabel(labelCount++, x, y, building.hp);
       } else if (building.kind === "tower") {
-        graphics.fillStyle(0x73d4cc).fillTriangle(x, y - 9, x + 9, y + 8, x - 9, y + 8);
+        if (building.evolution) {
+          this.drawEvolutionMark(building.evolution, x, y, building.evolution.kind === "piercing" ? 0x73d4cc : 0xf9bd7a);
+        } else {
+          graphics.fillStyle(0x73d4cc).fillTriangle(x, y - 9, x + 9, y + 8, x - 9, y + 8);
+        }
       } else {
         const color = building.kind === "economy" ? 0x927137 : 0x676299;
         graphics.fillStyle(color).fillRoundedRect(x - 10, y - 10, 20, 20, 3);
@@ -200,6 +209,10 @@ export class DefenseDebug {
 
     this.shots = this.shots.filter((trace) => trace.expires > this.timeMs);
     for (const { event } of this.shots) {
+      if (event.type === "towerEffect") {
+        this.drawEvolvedShot(event.effect, view);
+        continue;
+      }
       if (!isVisible(event.from) || !isVisible({ col: Math.floor(event.to.x), row: Math.floor(event.to.y) })) continue;
       const start = cellCenter(event.from);
       const endX = event.to.x * TILE_SIZE;
@@ -226,13 +239,100 @@ export class DefenseDebug {
 
     this.showStats(active, visible, Number.isFinite(northRow) ? northRow : -1, unreachable);
     const building = cell && isVisible(cell) ? this.map.getBuilding(cell) : undefined;
-    const name = building && (building.kind === "tower" && !this.expedition ? "测试塔" : BUILDING_NAMES[building.kind]);
-    const level = building?.level === 2 ? " · Lv.2" : "";
+    const name = building && (building.evolution ? evolutionName(building.evolution)
+      : building.kind === "tower" && !this.expedition ? "测试塔" : BUILDING_NAMES[building.kind]);
+    const level = building?.level === 2 && !building.evolution ? " · Lv.2" : "";
     const description = building ? `${name} ${coordinates(building.cell)} · ${building.hp} HP${level}` : "—";
     write(this.hover, description);
     this.expedition?.showBuilding(description);
     this.showBuildingStats(this.expedition ? building : undefined);
-    return this.expedition?.previewPlacement(cell);
+    const placement = this.expedition?.previewPlacement(cell);
+    const synthesis = this.expedition?.synthesisPreview;
+    if (synthesis) this.drawSynthesisPreview(synthesis);
+    return placement;
+  }
+
+  private drawSynthesisPreview(preview: BuildingSynthesisPreview): void {
+    const { retained, released, evolution } = preview;
+    const graphics = this.graphics;
+    if (this.isVisible(retained)) {
+      const { x, y } = cellCenter(retained);
+      graphics.lineStyle(2.5, 0x9ff7d4).strokeRect(x - 13, y - 13, 26, 26);
+      if (evolution) this.drawEvolutionMark(evolution, x, y, 0x9ff7d4);
+    }
+    for (const cell of released) {
+      if (!this.isVisible(cell)) continue;
+      const { x, y } = cellCenter(cell);
+      graphics.lineStyle(2, 0xffd897, 0.9)
+        .lineBetween(x - 11, y - 11, x + 11, y + 11)
+        .lineBetween(x - 11, y + 11, x + 11, y - 11);
+    }
+  }
+
+  private drawEvolutionMark(evolution: TowerEvolution, x: number, y: number, color: number): void {
+    const graphics = this.graphics;
+    graphics.lineStyle(2.5, color);
+    if (evolution.kind === "burst") {
+      graphics.strokeCircle(x, y, 8);
+      graphics.fillStyle(color).fillCircle(x, y, 2);
+    } else if (evolution.axis === "horizontal") {
+      graphics.lineBetween(x - 10, y, x + 10, y);
+    } else {
+      graphics.lineBetween(x, y - 10, x, y + 10);
+    }
+  }
+
+  private drawEvolvedShot(effect: TowerEffect, view: Phaser.Geom.Rectangle): void {
+    const { from } = effect;
+    if (!this.isVisible({ col: Math.floor(from.x), row: Math.floor(from.y) })) return;
+    if (effect.kind === "piercing") {
+      const { to } = effect;
+      const horizontal = from.y === to.y;
+      const origin = horizontal ? from.x : from.y;
+      const end = horizontal ? to.x : to.y;
+      const direction = Math.sign(end - origin);
+      let visibleEnd = origin;
+      while ((end - visibleEnd) * direction > 0) {
+        const tile = direction > 0 ? Math.floor(visibleEnd) : Math.ceil(visibleEnd) - 1;
+        const along = horizontal ? { col: tile, row: Math.floor(from.y) } : { col: Math.floor(from.x), row: tile };
+        if (!this.isVisible(along)) break;
+        visibleEnd = direction > 0 ? Math.min(end, tile + 1) : Math.max(end, tile);
+      }
+      const x = from.x * TILE_SIZE;
+      const y = from.y * TILE_SIZE;
+      const endX = (horizontal ? visibleEnd : from.x) * TILE_SIZE;
+      const endY = (horizontal ? from.y : visibleEnd) * TILE_SIZE;
+      if (Math.max(x, endX) < view.left || Math.min(x, endX) > view.right
+        || Math.max(y, endY) < view.top || Math.min(y, endY) > view.bottom) return;
+      this.graphics.lineStyle(3, 0xa4faff).lineBetween(x, y, endX, endY);
+      return;
+    }
+
+    const { center, radius } = effect;
+    const x = center.x * TILE_SIZE;
+    const y = center.y * TILE_SIZE;
+    const r = radius * TILE_SIZE;
+    if (x + r < view.left || x - r > view.right || y + r < view.top || y - r > view.bottom
+      || !this.isVisible({ col: Math.floor(center.x), row: Math.floor(center.y) })) return;
+
+    // Draw only ring segments whose bounding tiles are currently visible.
+    this.graphics.lineStyle(2.5, 0xf9bd7a);
+    let previousX = x + r;
+    let previousY = y;
+    for (let segment = 1; segment <= 16; segment += 1) {
+      const angle = segment * Math.PI / 8;
+      const nextX = x + r * Math.cos(angle);
+      const nextY = y + r * Math.sin(angle);
+      let visible = true;
+      for (let row = Math.floor(Math.min(previousY, nextY) / TILE_SIZE); row <= Math.floor(Math.max(previousY, nextY) / TILE_SIZE); row += 1) {
+        for (let col = Math.floor(Math.min(previousX, nextX) / TILE_SIZE); col <= Math.floor(Math.max(previousX, nextX) / TILE_SIZE); col += 1) {
+          if (!this.isVisible({ col, row })) visible = false;
+        }
+      }
+      if (visible) this.graphics.lineBetween(previousX, previousY, nextX, nextY);
+      previousX = nextX;
+      previousY = nextY;
+    }
   }
 
   private showBuildingStats(building?: Building): void {
@@ -244,6 +344,14 @@ export class DefenseDebug {
     const prefix = `Lv.${level}`;
     if (kind === "wall") {
       write(this.buildingStats, `${prefix} · 耐久 ${building.hp}/${building.maxHp} HP`);
+    } else if (building.evolution) {
+      const { evolution } = building;
+      const attack = evolvedTowerAttributes(evolution, biome);
+      const range = attack.range > attack.baseRange ? `${attack.range} 格（${attack.baseRange} + 高山 ${attack.range - attack.baseRange}）`
+        : `${attack.range} 格`;
+      const damage = attack.kind === "piercing" ? `伤害 ${attack.damage} · 最多 ${attack.maxTargets} 个目标`
+        : `主伤害 ${attack.damage} · 溅射 ${attack.splashDamage} · 半径 ${attack.radius} 格`;
+      write(this.buildingStats, `${evolutionDirection(evolution)} · ${damage} · 射程 ${range} · 间隔 ${attack.intervalMs} ms`);
     } else if (kind === "tower") {
       const { damage, range, intervalMs } = towerAttributes(buildingBalance, level, biome);
       write(this.buildingStats, `${prefix} · 伤害 ${damage} · 射程 ${range} 格 · 间隔 ${intervalMs} ms`);
@@ -263,6 +371,10 @@ export class DefenseDebug {
     this.clearBreach();
     this.shots = [];
     this.hitMarkers = [];
+    this.towerEffectTrace.length = 0;
+    this.evolvedShots.piercing = 0;
+    this.evolvedShots.burst = 0;
+    delete this.stats.dataset.towerEffects;
     this.pendingContacts.length = 0;
     this.contactRecords.length = 0;
     this.contactTrace.value = "";
@@ -375,7 +487,16 @@ export class DefenseDebug {
   private onEvent(event: DefenseEvent, metadata: DefenseEventMetadata): void {
     const credit = this.expedition?.economy.handleEvent(event, metadata.waveId) ?? 0;
     this.economyHistory?.creditKill(metadata.waveId, credit);
-    if (event.type === "towerShot") this.shots.push({ event, expires: this.timeMs + SHOT_VISIBLE_MS });
+    if (event.type === "towerEffect" || (event.type === "towerShot" && (metadata.towerHit?.kind ?? "standard") === "standard")) {
+      this.shots.push({ event, expires: this.timeMs + SHOT_VISIBLE_MS });
+    }
+    if (event.type === "towerEffect" && this.scenario.debugControls) {
+      const { towerId, effect, enemyIds } = event;
+      this.evolvedShots[effect.kind] += 1;
+      this.towerEffectTrace.push({ timeMs: this.timeMs, towerId, effect, enemyIds });
+      if (this.towerEffectTrace.length > MAX_TOWER_EFFECT_RECORDS) this.towerEffectTrace.shift();
+      this.stats.dataset.towerEffects = JSON.stringify({ ...this.evolvedShots, recent: this.towerEffectTrace });
+    }
     if (event.type === "wallImpact") {
       const result = event.destroyed ? "墙已毁" : `墙剩 ${event.hp} HP`;
       write(this.status, `撞墙 · -${event.damage} HP · ${result}`);

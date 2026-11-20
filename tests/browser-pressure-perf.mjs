@@ -1,17 +1,12 @@
 import assert from 'node:assert/strict';
-import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright-core';
-import { preview } from 'vite';
+import { openBrowserTestServer } from './browser-regression-server.mjs';
 
-const host = '127.0.0.1';
-const root = fileURLToPath(new URL('..', import.meta.url));
-const server = await preview({ root, preview: { host, port: 0, strictPort: true } });
+const { url, close } = await openBrowserTestServer();
 try {
-  const address = server.httpServer?.address();
-  assert.ok(address && typeof address === 'object');
   const browser = await chromium.launch({ channel: 'msedge' });
   try {
-    console.log(`Edge ${browser.version()} · production · seed 12 · wait-test · 1280×900 · live RAF`);
+    console.log(`Edge ${browser.version()} · compiled regression build · seed 12 · wait-test · 1280×900 · live RAF`);
     for (const [profile, expected] of [['baseline', 3], ['a', 10], ['b', 10]]) {
       for (let trial = 1; trial <= 3; trial += 1) {
         const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
@@ -19,7 +14,7 @@ try {
         page.on('console', (message) => { if (message.type() === 'error') errors.push(message.text()); });
         page.on('pageerror', (error) => errors.push(error.message));
         try {
-          await page.goto(`http://${host}:${address.port}/?mode=play&seed=12&speed=wait-test&debug=1&difficulty=${profile}`);
+          await page.goto(`${url}/?mode=play&seed=12&speed=wait-test&debug=1&difficulty=${profile}`);
           const result = await page.evaluate(() => new Promise((resolve, reject) => {
             const stats = document.querySelector('#defense-stats').dataset;
             const frames = [];
@@ -83,5 +78,5 @@ try {
     await browser.close();
   }
 } finally {
-  await server.close();
+  await close();
 }

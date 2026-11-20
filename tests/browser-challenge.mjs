@@ -19,11 +19,15 @@ const coords = ({ col, row }) => '(' + col + ', ' + row + ')';
 const now = (page) => page.evaluate(() => performance.now());
 const neighbors = ({ col, row }) => [cell(col, row - 1), cell(col - 1, row), cell(col + 1, row), cell(col, row + 1)];
 
-export async function openChallenge(page, baseUrl, seed, build, experiment) {
+export async function openChallenge(page, baseUrl, seed, build, experiment, { playtestUrl } = {}) {
   const layout = [...playFixture(seed).layout];
-  const url = new URL('/?mode=play&difficulty=challenge&debug=1&seed=' + seed, baseUrl);
-  if (build) url.searchParams.set('build', build);
-  if (experiment) url.searchParams.set('midgame', experiment);
+  const url = new URL(playtestUrl ?? '/?mode=play&difficulty=challenge&debug=1&seed=' + seed, baseUrl);
+  if (playtestUrl === undefined) {
+    if (build) url.searchParams.set('build', build);
+    if (experiment) url.searchParams.set('midgame', experiment);
+  } else {
+    url.searchParams.set('seed', String(seed));
+  }
   const game = await openWideGame(page, url.href, layout);
   const roundUrl = page.url();
   const maker = page.locator('#make-card');
@@ -39,9 +43,11 @@ export async function openChallenge(page, baseUrl, seed, build, experiment) {
   async function assertFresh() {
     assert.equal(page.url(), roundUrl);
     assert.deepEqual(await game.position(), GENERATED_SPAWN);
-    assert.equal(await page.locator('#round-difficulty option:checked').textContent(), '挑战模式：从零开始');
-    assert.equal(await page.locator('#challenge-balance').inputValue(), build ?? 'w25');
-    assert.equal(await page.locator('#midgame-experiment').inputValue(), experiment ?? 'control');
+    if (playtestUrl === undefined) {
+      assert.equal(await page.locator('#round-difficulty option:checked').textContent(), '挑战模式：从零开始');
+      assert.equal(await page.locator('#challenge-balance').inputValue(), build ?? 'w25');
+      assert.equal(await page.locator('#midgame-experiment').inputValue(), experiment ?? 'control');
+    }
     assert.equal(await page.locator('#round-time-label').textContent(), '首波倒计时');
     assert.equal(await page.locator('#round-time').textContent(), '60 秒');
     assert.equal(await page.locator('#round-next-count').textContent(), '8 只');
@@ -235,7 +241,7 @@ export async function openChallenge(page, baseUrl, seed, build, experiment) {
     const beforeCash = Number(await cash());
     const displayedCost = (await maker.textContent()).match(/制造卡牌（(\d+) 经济）/);
     assert.ok(displayedCost);
-    if (!experiment) assert.equal(Number(displayedCost[1]), ECONOMY_PROTOTYPE.drawCost);
+    if (playtestUrl === undefined && !experiment) assert.equal(Number(displayedCost[1]), ECONOMY_PROTOTYPE.drawCost);
     await maker.click();
     const kind = await page.locator('#card-draw-result').getAttribute('data-card');
     if (expected) assert.equal(kind, expected);

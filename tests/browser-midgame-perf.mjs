@@ -1,13 +1,10 @@
 import assert from "node:assert/strict";
-import { fileURLToPath } from "node:url";
 import { chromium } from "playwright-core";
-import { preview } from "vite";
 import { TILE_SIZE } from "../src/player.ts";
 import { startFirstWave } from "./browser-challenge.mjs";
 import { preparePaidTowers } from "./browser-midgame-economy.mjs";
+import { openBrowserTestServer } from "./browser-regression-server.mjs";
 
-const host = "127.0.0.1";
-const root = fileURLToPath(new URL("..", import.meta.url));
 const seed = 515;
 const sampleMs = 25_000;
 const cell = (col, row) => ({ col, row });
@@ -88,22 +85,20 @@ async function sustainedDefense(page, url) {
   return { seed, fog: true, paidTowers: 4, beamOriginsSameFrame: beamOrigins, clockResumed: true, ...result };
 }
 
-const server = await preview({ root, preview: { host, port: 0, strictPort: true } });
+const { url, close } = await openBrowserTestServer();
 try {
-  const address = server.httpServer?.address();
-  assert.ok(address && typeof address === "object");
   const browser = await chromium.launch({ channel: "msedge" });
   try {
     const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
     const errors = [];
     page.on("pageerror", (error) => errors.push(error.message));
     page.on("console", (message) => { if (message.type() === "error") errors.push(message.text()); });
-    const result = await sustainedDefense(page, `http://${host}:${address.port}`);
+    const result = await sustainedDefense(page, url);
     assert.deepEqual(errors, []);
-    console.log(JSON.stringify({ edge: browser.version(), viewport: "1280x900", ...result }));
+    console.log(JSON.stringify({ edge: browser.version(), build: "compiled regression", viewport: "1280x900", ...result }));
   } finally {
     await browser.close();
   }
 } finally {
-  await server.close();
+  await close();
 }

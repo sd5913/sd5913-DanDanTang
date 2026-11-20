@@ -1,6 +1,7 @@
 import { EnemyNavigation } from "./enemy-navigation.ts";
 import type { NavigationAction } from "./enemy-navigation.ts";
-import { TOWER_LEVEL_ONE, towerAttributes } from "./building-balance.ts";
+import { TOWER_LEVEL_ONE, evolvedTowerAttributes, towerAttributes } from "./building-balance.ts";
+import type { BurstTowerAttributes, PiercingTowerAttributes } from "./building-balance.ts";
 import type { Building, BuildingKind } from "./buildings.ts";
 import { boxDistance, ENEMY_RADIUS, sweepPlayerContact } from "./enemy-contact.ts";
 import type { PlayerContact } from "./enemy-contact.ts";
@@ -8,6 +9,8 @@ import type { WaveOrder } from "./expedition-round.ts";
 import { cellCenter, TILE_SIZE, worldToCell } from "./player.ts";
 import type { Point } from "./player.ts";
 import type { GridPosition, TerrainMap } from "./terrain.ts";
+import { buildEvolvedTowerCoverage, evolvedTargetDistanceSquared, hasTowerLineOfSight } from "./tower-attack.ts";
+import type { PiercingCoverage } from "./tower-attack.ts";
 import { WaveCombatMetrics } from "./wave-combat-metrics.ts";
 import type { AttackEndReason, TowerExposureAnchor, WaveCombatSnapshot } from "./wave-combat-metrics.ts";
 
@@ -87,6 +90,21 @@ interface SpawnRequest {
   readonly deployment: WaveDeployment;
 }
 
+/** Visual attack geometry in fractional tile coordinates. */
+export type TowerEffect =
+  | { readonly kind: "piercing"; readonly from: Point; readonly to: Point }
+  | { readonly kind: "burst"; readonly from: Point; readonly center: Point; readonly radius: number };
+
+interface TowerStrike {
+  readonly enemy: EnemyState;
+  readonly position: Position;
+  readonly rawDamage: number;
+}
+
+interface PiercingHit extends TowerStrike {
+  readonly distance: number;
+}
+
 export type DefenseEvent =
   | { type: "targetSelected"; enemyId: number; target: Target }
   | { type: "playerContact" | "buildingContact"; enemyId: number; target: GridPosition }
@@ -95,6 +113,7 @@ export type DefenseEvent =
       damage: number; hp: number; destroyed: boolean }
   | { type: "wallImpact"; enemyId: number; wallId: string; damage: number; hp: number; destroyed: boolean }
   | { type: "towerShot"; enemyId: number; towerId: string; from: GridPosition; to: Position; damage: number }
+  | { type: "towerEffect"; towerId: string; effect: TowerEffect; readonly enemyIds: readonly number[] }
   | { type: "towerKill"; enemyId: number; towerId: string };
 
 export interface DefenseEventMetadata {
@@ -102,6 +121,12 @@ export interface DefenseEventMetadata {
   readonly enemyKind: EnemyKind;
   readonly timeMs: number;
   readonly cell?: GridPosition;
+  readonly towerHit?: {
+    readonly kind: "standard" | TowerEffect["kind"];
+    readonly rawDamage: number;
+    readonly overkill: number;
+    readonly enemyCell: GridPosition;
+  };
   readonly contact?: PlayerContact & {
     readonly enemyCell: GridPosition;
     readonly navigationTarget?: string;
@@ -161,6 +186,8 @@ export class DefenseSimulation {
   private readonly units = new Map<number, EnemyState>();
   private readonly spawnQueue: SpawnRequest[] = [];
   private towerReadyAt = new WeakMap<GridPosition, number>();
+  private towerCoverageRevision = -1;
+  private towerCoverage = new WeakMap<GridPosition, PiercingCoverage>();
   private navigation: EnemyNavigation;
   private counts = newCounters();
   private timeMs = 0;
@@ -261,6 +288,7 @@ export class DefenseSimulation {
     this.units.clear();
     this.spawnQueue.length = 0;
     this.towerReadyAt = new WeakMap();
+    this.towerCoverageRevision = -1;
     this.navigation = new EnemyNavigation(this.map);
     this.counts = newCounters();
     this.timeMs = 0;
@@ -440,7 +468,10 @@ export class DefenseSimulation {
     for (const building of this.map.getBuildings()) {
       this.threatBuildings.push(building.cell);
       if (building.kind === "tower") {
-        const { range } = towerAttributes(this.map.buildingBalance, building.level, this.map.getBiome(building.cell));
+        const biome = this.map.getBiome(building.cell);
+        const { range } = building.evolution
+          ? evolvedTowerAttributes(building.evolution, biome)
+          : towerAttributes(this.map.buildingBalance, building.level, biome);
         this.exposureTowers.push({ cell: building.cell, radius: range });
       }
     }
@@ -564,8 +595,15 @@ export class DefenseSimulation {
   }
 
   private fireTower(tower: Building): void {
-    if ((this.towerReadyAt.get(tower.cell) ?? 0) > this.timeMs) return;
-    const attributes = towerAttributes(this.map.buildingBalance, tower.level, this.map.getBiome(tower.cell));
+    if (!this.units.size || (this.towerReadyAt.get(tower.cell) ?? 0) > this.timeMs) return;
+    const biome = this.map.getBiome(tower.cell);
+    if (tower.evolution) {
+      const attributes = evolvedTowerAttributes(tower.evolution, biome);
+      if (attributes.kind === "piercing") this.firePiercingTower(tower, attributes);
+      else this.fireBurstTower(tower, attributes);
+      return;
+    }
+    const attributes = towerAttributes(this.map.buildingBalance, tower.level, biome);
     let selected: EnemyState | undefined;
     let closest = attributes.range ** 2;
     for (const enemy of this.units.values()) {
@@ -578,16 +616,105 @@ export class DefenseSimulation {
     if (!selected) return;
 
     this.towerReadyAt.set(tower.cell, this.timeMs + attributes.intervalMs);
-    const damage = Math.min(selected.hp, attributes.damage);
-    selected.hp -= damage;
-    this.counts.shots += 1;
-    this.waveCombat.recordTowerHit(selected.id, this.timeMs);
-    this.emitFor(selected, { type: "towerShot", enemyId: selected.id, towerId: tower.id,
-      from: tower.cell, to: enemyPosition(selected), damage }, tower.cell);
-    if (selected.hp === 0 && this.units.delete(selected.id)) {
-      this.counts.towerKills += 1;
-      this.waveCombat.resolve(selected.id, "towerKills", this.timeMs);
-      this.emitFor(selected, { type: "towerKill", enemyId: selected.id, towerId: tower.id }, tower.cell);
+    this.hitTowerEnemy(tower, selected, enemyPosition(selected), attributes.damage, "standard");
+  }
+
+  private piercingCoverage(cell: GridPosition, attributes: PiercingTowerAttributes): PiercingCoverage {
+    if (this.towerCoverageRevision !== this.map.revision) {
+      this.towerCoverage = new WeakMap();
+      this.towerCoverageRevision = this.map.revision;
     }
+    let coverage = this.towerCoverage.get(cell);
+    if (!coverage) {
+      coverage = buildEvolvedTowerCoverage(this.map, cell, attributes);
+      this.towerCoverage.set(cell, coverage);
+    }
+    return coverage;
+  }
+
+  private firePiercingTower(tower: Building, attributes: PiercingTowerAttributes): void {
+    const coverage = this.piercingCoverage(tower.cell, attributes);
+    const { origin, axis } = coverage;
+    const negative: PiercingHit[] = [];
+    const positive: PiercingHit[] = [];
+    for (const enemy of this.units.values()) {
+      const position = enemyPosition(enemy);
+      const distance = evolvedTargetDistanceSquared(this.map, coverage, position);
+      if (distance === undefined) continue;
+      const forward = axis === "horizontal" ? position.x - origin.x : position.y - origin.y;
+      const side = forward < 0 ? negative : positive;
+      const insertAt = side.findIndex((hit) => hit.distance > distance);
+      if (insertAt === -1) {
+        if (side.length < attributes.maxTargets) side.push({ enemy, position, distance, rawDamage: attributes.damage });
+      } else {
+        side.splice(insertAt, 0, { enemy, position, distance, rawDamage: attributes.damage });
+        if (side.length > attributes.maxTargets) side.pop();
+      }
+    }
+    const nearestNegative = negative[0];
+    const nearestPositive = positive[0];
+    const firesNegative = nearestNegative && (!nearestPositive || nearestNegative.distance < nearestPositive.distance
+      || (nearestNegative.distance === nearestPositive.distance && nearestNegative.enemy.id < nearestPositive.enemy.id));
+    const hits = firesNegative ? negative : positive;
+    if (!hits.length) return;
+
+    const distance = firesNegative ? -coverage.negativeReach : coverage.positiveReach;
+    const to = axis === "horizontal" ? { x: origin.x + distance, y: origin.y } : { x: origin.x, y: origin.y + distance };
+    this.resolveEvolvedAttack(tower, attributes.intervalMs, hits, { kind: "piercing", from: origin, to });
+  }
+
+  private fireBurstTower(tower: Building, attributes: BurstTowerAttributes): void {
+    const coverage = buildEvolvedTowerCoverage(this.map, tower.cell, attributes);
+    let closest = coverage.rangeSquared;
+    let primary: TowerStrike | undefined;
+    for (const enemy of this.units.values()) {
+      const position = enemyPosition(enemy);
+      const distance = evolvedTargetDistanceSquared(this.map, coverage, position, closest);
+      if (distance === undefined || (primary && distance === closest)) continue;
+      primary = { enemy, position, rawDamage: attributes.damage };
+      closest = distance;
+    }
+    if (!primary) return;
+
+    const center = primary.position;
+    const radiusSquared = attributes.radius ** 2;
+    const hits = [primary];
+    for (const enemy of this.units.values()) {
+      if (enemy === primary.enemy) continue;
+      const position = enemyPosition(enemy);
+      const distance = (position.x - center.x) ** 2 + (position.y - center.y) ** 2;
+      if (distance > radiusSquared || !hasTowerLineOfSight(this.map, center, position)) continue;
+      hits.push({ enemy, position, rawDamage: attributes.splashDamage });
+    }
+    this.resolveEvolvedAttack(tower, attributes.intervalMs, hits,
+      { kind: "burst", from: coverage.origin, center, radius: attributes.radius });
+  }
+
+  private resolveEvolvedAttack(tower: Building, intervalMs: number, hits: readonly TowerStrike[], effect: TowerEffect): void {
+    this.towerReadyAt.set(tower.cell, this.timeMs + intervalMs);
+    const enemyIds: number[] = [];
+    for (const { enemy, position, rawDamage } of hits) {
+      if (this.hitTowerEnemy(tower, enemy, position, rawDamage, effect.kind)) enemyIds.push(enemy.id);
+    }
+    if (enemyIds.length) this.emitFor(hits[0].enemy, { type: "towerEffect", towerId: tower.id, enemyIds, effect }, tower.cell);
+  }
+
+  private hitTowerEnemy(tower: Building, enemy: EnemyState, to: Position, rawDamage: number,
+    kind: NonNullable<DefenseEventMetadata["towerHit"]>["kind"]): boolean {
+    if (this.units.get(enemy.id) !== enemy || enemy.hp === 0) return false;
+    const damage = Math.min(enemy.hp, rawDamage);
+    enemy.hp -= damage;
+    this.counts.shots += 1;
+    this.waveCombat.recordTowerHit(enemy.id, this.timeMs);
+    this.emit({ type: "towerShot", enemyId: enemy.id, towerId: tower.id, from: tower.cell, to, damage }, {
+      waveId: enemy.waveId, enemyKind: enemy.kind, timeMs: this.timeMs, cell: tower.cell,
+      towerHit: { kind, rawDamage, overkill: rawDamage - damage, enemyCell: { col: Math.floor(to.x), row: Math.floor(to.y) } },
+    });
+    if (enemy.hp === 0 && this.units.delete(enemy.id)) {
+      this.counts.towerKills += 1;
+      this.waveCombat.resolve(enemy.id, "towerKills", this.timeMs);
+      this.emitFor(enemy, { type: "towerKill", enemyId: enemy.id, towerId: tower.id }, tower.cell);
+    }
+    return true;
   }
 }

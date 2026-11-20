@@ -3,6 +3,10 @@ import type { BuildingBalanceId } from "./building-balance.ts";
 import type { GridPosition } from "./terrain.ts";
 
 export type BuildingKind = "wall" | "tower" | "economy" | "technology";
+export type TowerAxis = "horizontal" | "vertical";
+export type TowerEvolution =
+  | { readonly kind: "piercing"; readonly axis: TowerAxis }
+  | { readonly kind: "burst" };
 export const BUILDING_SYNTHESIS_CONFIG = { autoMerge: true } as const;
 const BUILDING_KINDS: ReadonlySet<BuildingKind> = new Set(["wall", "tower", "economy", "technology"]);
 
@@ -14,6 +18,13 @@ export interface Building {
   readonly buildOrder: number;
   readonly hp: number;
   readonly maxHp: number;
+  readonly evolution?: TowerEvolution;
+}
+
+export interface BuildingSynthesisPreview {
+  readonly retained: GridPosition;
+  readonly released: readonly GridPosition[];
+  readonly evolution?: TowerEvolution;
 }
 
 export interface WallImpact {
@@ -55,12 +66,14 @@ function compareGroups(a: readonly Building[], b: readonly Building[]): number {
 export class BuildingStore {
   readonly #columns: number;
   readonly #balance: BuildingBalanceId;
+  readonly #towerEvolution: boolean;
   readonly #occupied = new Map<number, Building>();
   #nextId = 1;
 
-  constructor(columns: number, balance: BuildingBalanceId = "control") {
+  constructor(columns: number, balance: BuildingBalanceId = "control", towerEvolution = false) {
     this.#columns = columns;
     this.#balance = balance;
+    this.#towerEvolution = towerEvolution;
   }
 
   get(cell: GridPosition): Building | undefined {
@@ -76,24 +89,53 @@ export class BuildingStore {
     const index = this.index(cell);
     if (this.#occupied.has(index)) return undefined;
 
-    const building = Object.freeze({
+    const building = this.createBuilding(kind, cell, hp);
+    this.#nextId += 1;
+    this.#occupied.set(index, building);
+    return building;
+  }
+
+  private createBuilding(kind: BuildingKind, cell: GridPosition, hp: number): Building {
+    return Object.freeze({
       id: `building-${this.#nextId}`,
       kind,
       cell: Object.freeze({ ...cell }),
-      level: 1 as const,
+      level: 1,
       buildOrder: this.#nextId,
       hp,
       maxHp: hp,
     });
-    this.#nextId += 1;
-    this.#occupied.set(index, building);
-    return building;
+  }
+
+  previewSynthesis(kind: BuildingKind, cell: GridPosition, hp: number): BuildingSynthesisPreview | undefined {
+    if (!this.canIndex(cell) || this.get(cell) || !BUILDING_KINDS.has(kind)
+      || !Number.isSafeInteger(hp) || hp <= 0) return undefined;
+
+    // The prospective building already belongs to every rooted candidate, so it need not be inserted.
+    const plan = this.planSynthesis(this.createBuilding(kind, cell, hp));
+    if (!plan) return undefined;
+    const { upgraded, consumed } = plan;
+    return {
+      retained: upgraded.cell,
+      released: consumed.map((building) => building.cell),
+      ...(upgraded.evolution ? { evolution: upgraded.evolution } : {}),
+    };
   }
 
   synthesize(cell: GridPosition): Building | undefined {
     if (!this.canIndex(cell)) return undefined;
     const root = this.get(cell);
     if (root?.level !== 1) return undefined;
+
+    const plan = this.planSynthesis(root);
+    if (!plan) return undefined;
+    const { upgraded, consumed } = plan;
+    for (const building of consumed) this.#occupied.delete(this.index(building.cell));
+    this.#occupied.set(this.index(upgraded.cell), upgraded);
+    return upgraded;
+  }
+
+  private planSynthesis(root: Building): { readonly upgraded: Building; readonly consumed: readonly Building[] } | undefined {
     const group = this.findSynthesisGroup(root);
     if (!group) return undefined;
 
@@ -101,10 +143,15 @@ export class BuildingStore {
     const maxHp = incumbent.kind === "wall" ? incumbent.maxHp * wallHpMultiplier(this.#balance, 2) : incumbent.maxHp;
     if (!Number.isSafeInteger(maxHp)) return undefined;
     const missingHp = incumbent.maxHp - incumbent.hp;
-    const upgraded = Object.freeze({ ...incumbent, level: 2 as const, maxHp, hp: maxHp - missingHp });
-    for (const building of consumed) this.#occupied.delete(this.index(building.cell));
-    this.#occupied.set(this.index(incumbent.cell), upgraded);
-    return upgraded;
+    const evolution = this.#towerEvolution && incumbent.kind === "tower" ? towerEvolutionFor(group) : undefined;
+    const upgraded = Object.freeze({
+      ...incumbent,
+      level: 2 as const,
+      maxHp,
+      hp: maxHp - missingHp,
+      ...(evolution ? { evolution } : {}),
+    });
+    return { upgraded, consumed };
   }
 
   private findSynthesisGroup(root: Building): Building[] | undefined {
@@ -178,4 +225,16 @@ export class BuildingStore {
   private index({ col, row }: GridPosition): number {
     return row * this.#columns + col;
   }
+}
+
+function towerEvolutionFor(group: readonly Building[]): TowerEvolution {
+  const { col, row } = group[0].cell;
+  // The four distinct cells are already connected, so sharing a row or column implies a complete line.
+  if (group.every((building) => building.cell.row === row)) {
+    return Object.freeze({ kind: "piercing", axis: "horizontal" });
+  }
+  if (group.every((building) => building.cell.col === col)) {
+    return Object.freeze({ kind: "piercing", axis: "vertical" });
+  }
+  return Object.freeze({ kind: "burst" });
 }

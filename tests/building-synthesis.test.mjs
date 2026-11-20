@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { BUILDING_SYNTHESIS_CONFIG, BuildingStore } from "../src/buildings.ts";
+import { CHUNK_ROWS, TerrainMap } from "../src/terrain.ts";
 
 const shapeRows = [
   ["####"], ["#", "#", "#", "#"],
@@ -19,6 +20,10 @@ function points(shape) {
 
 function point(col, row) {
   return { col, row };
+}
+
+function emptyLayout() {
+  return ["S...........", ...Array(CHUNK_ROWS * 2 - 1).fill("............")];
 }
 
 test("all 19 oriented tetrominoes synthesize from every possible placement root", () => {
@@ -120,4 +125,104 @@ test("upgraded wall keeps its damage and ID, and released building IDs stay stal
     assert.equal(store.remove(old.cell, old.id), undefined);
     assert.equal(store.get(old.cell), next);
   }
+});
+
+test("MERGE-01–04: every rooted tetromino previews and produces the corresponding tower evolution", () => {
+  for (const [index, shape] of shapeRows.entries()) {
+    const expected = index === 0 ? { kind: "piercing", axis: "horizontal" }
+      : index === 1 ? { kind: "piercing", axis: "vertical" }
+      : { kind: "burst" };
+    for (const root of points(shape)) {
+      const map = new TerrainMap(emptyLayout(), { towerEvolution: true });
+      const ordered = [...points(shape).filter((cell) => cell.col !== root.col || cell.row !== root.row), root];
+      for (const cell of ordered.slice(0, 3)) {
+        assert.equal(map.previewBuildingSynthesis("tower", cell), undefined);
+        assert.equal(map.placeBuilding("tower", cell).level, 1);
+      }
+
+      const label = `${shape.join("/")} rooted at (${root.col}, ${root.row})`;
+      const preview = map.previewBuildingSynthesis("tower", root);
+      const incumbent = map.getBuilding(ordered[0]);
+      assert.deepEqual(preview, { retained: ordered[0], released: ordered.slice(1), evolution: expected }, label);
+      const upgraded = map.placeBuilding("tower", root);
+      assert.deepEqual(upgraded, { ...incumbent, level: 2, evolution: expected }, label);
+      assert.equal(upgraded.cell, incumbent.cell, label);
+      assert.ok(Object.isFrozen(upgraded.evolution), label);
+      assert.deepEqual([...map.getBuildings()], [upgraded], label);
+      assert.ok(preview.released.every((cell) => map.isWalkable(cell)), label);
+    }
+  }
+});
+
+test("MERGE-05–06: a five-tower group uses its oldest rooted candidate across the chunk seam", () => {
+  const west = point(5, 31);
+  const nearWest = point(6, 31);
+  const east = point(8, 31);
+  const south = point(7, 32);
+  const root = point(7, 31);
+  const cases = [
+    { order: [west, nearWest, east, south], evolution: { kind: "piercing", axis: "horizontal" } },
+    { order: [south, west, nearWest, east], evolution: { kind: "burst" } },
+  ];
+  for (const { order, evolution } of cases) {
+    const map = new TerrainMap(emptyLayout(), { towerEvolution: true });
+    for (const cell of order) assert.equal(map.placeBuilding("tower", cell, 3).level, 1);
+    const incumbent = map.getBuilding(order[0]);
+    assert.equal(map.damageBuilding(incumbent.cell, incumbent.id, 1).hp, 2);
+    const before = [...map.getBuildings()];
+    const revision = map.revision;
+    const preview = map.previewBuildingSynthesis("tower", root);
+    assert.deepEqual(preview, { retained: order[0], released: [...order.slice(1, 3), root], evolution });
+    assert.deepEqual([...map.getBuildings()], before);
+    assert.equal(map.revision, revision);
+
+    const upgraded = map.placeBuilding("tower", root);
+    assert.deepEqual(upgraded, { ...incumbent, hp: 2, level: 2, evolution });
+    assert.equal(upgraded.cell, incumbent.cell);
+    assert.equal(map.getCell(incumbent.cell).buildingId, incumbent.id);
+    assert.equal(map.getBuilding(order[3]), before[3]);
+    assert.equal(map.revision, revision + 1);
+    assert.ok(preview.released.every((cell) => map.isWalkable(cell)));
+    const replacement = map.placeBuilding("tower", root);
+    assert.equal(replacement.buildOrder, 6, "preview did not allocate an ID");
+  }
+});
+
+test("MERGE-07: opt-in tower evolution leaves other kinds and historical synthesis unchanged", () => {
+  for (const kind of ["wall", "tower", "economy", "technology"]) {
+    const legacy = new TerrainMap(emptyLayout());
+    const enabled = new TerrainMap(emptyLayout(), { towerEvolution: true });
+    for (const col of [1, 2, 3]) {
+      legacy.placeBuilding(kind, point(col, 1));
+      enabled.placeBuilding(kind, point(col, 1));
+    }
+    const root = point(4, 1);
+    const preview = legacy.previewBuildingSynthesis(kind, root);
+    assert.equal(preview.evolution, undefined);
+    const basicUpgrade = legacy.placeBuilding(kind, root);
+    assert.equal(basicUpgrade.level, 2);
+    assert.equal(basicUpgrade.evolution, undefined);
+    if (kind !== "tower") {
+      assert.deepEqual(enabled.previewBuildingSynthesis(kind, root), preview);
+      assert.deepEqual(enabled.placeBuilding(kind, root), basicUpgrade);
+    }
+  }
+});
+
+test("placement preview ignores occupied, solid, out-of-bounds and manual-only targets", () => {
+  const layout = emptyLayout();
+  layout[1] = "....+.......";
+  const map = new TerrainMap(layout, { towerEvolution: true });
+  const manual = new TerrainMap(emptyLayout(), { autoMerge: false, towerEvolution: true });
+  for (const col of [1, 2, 3]) {
+    map.placeBuilding("tower", point(col, 1));
+    manual.placeBuilding("tower", point(col, 1));
+  }
+  assert.equal(map.previewBuildingSynthesis("tower", point(3, 1)), undefined);
+  assert.equal(map.previewBuildingSynthesis("tower", point(4, 1)), undefined);
+  assert.equal(map.previewBuildingSynthesis("tower", point(-1, 1)), undefined);
+  assert.equal(map.previewBuildingSynthesis("wall", point(0, 1)), undefined);
+  assert.equal(manual.previewBuildingSynthesis("tower", point(4, 1)), undefined);
+  assert.equal(manual.placeBuilding("tower", point(4, 1)).level, 1);
+  assert.deepEqual(manual.synthesizeBuilding(point(4, 1)).evolution, { kind: "piercing", axis: "horizontal" });
 });

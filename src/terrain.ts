@@ -1,7 +1,7 @@
 import { buildingMaxHp } from "./building-balance.ts";
 import type { BuildingBalanceId } from "./building-balance.ts";
 import { BUILDING_SYNTHESIS_CONFIG, BuildingStore } from "./buildings.ts";
-import type { Building, BuildingImpact, BuildingKind, WallImpact } from "./buildings.ts";
+import type { Building, BuildingImpact, BuildingKind, BuildingSynthesisPreview, WallImpact } from "./buildings.ts";
 import type { BiomeId } from "./expedition-biomes.ts";
 import { TERRAIN_HP_BY_LEVEL } from "./mining-config.ts";
 import { TEST_MAP_LAYOUT } from "./test-map.ts";
@@ -89,6 +89,7 @@ export interface TerrainOptions {
   readonly autoMerge?: boolean;
   readonly biomes?: readonly (readonly BiomeId[])[];
   readonly buildingBalance?: BuildingBalanceId;
+  readonly towerEvolution?: boolean;
 }
 
 function chunkRowFor(row: number): number {
@@ -122,7 +123,7 @@ export class TerrainMap implements TerrainReader {
       throw new RangeError("Biome metadata must match the terrain dimensions");
     }
     this.#biomes = options.biomes?.map((row) => [...row]);
-    this.#buildings = new BuildingStore(this.columns, this.buildingBalance);
+    this.#buildings = new BuildingStore(this.columns, this.buildingBalance, options.towerEvolution);
     const spawnRow = this.#layout.findIndex((row) => row.includes("S"));
     const spawnCol = this.#layout[spawnRow]?.indexOf("S") ?? -1;
     if (spawnRow < 0
@@ -206,6 +207,11 @@ export class TerrainMap implements TerrainReader {
 
   getBuildings(): Iterable<Building> {
     return this.#buildings.values();
+  }
+
+  previewBuildingSynthesis(kind: BuildingKind, position: GridPosition): BuildingSynthesisPreview | undefined {
+    if (!this.#autoMerge || !this.isWalkable(position)) return undefined;
+    return this.#buildings.previewSynthesis(kind, position, buildingMaxHp(kind, this.buildingBalance));
   }
 
   placeBuilding(kind: BuildingKind, position: GridPosition, hp = buildingMaxHp(kind, this.buildingBalance)): Building | undefined {

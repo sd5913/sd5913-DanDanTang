@@ -47,6 +47,7 @@ export class GridScene extends Phaser.Scene {
     super("grid");
     this.terrain = new TerrainMap(layout, {
       autoMerge: wide ? undefined : false, biomes, buildingBalance: defenseOptions?.buildingBalance,
+      towerEvolution: defenseOptions?.towerEvolution,
     });
     this.player = new Player(this.terrain.spawn);
     if (defenseOptions?.fogEnabled) this.fog = new ExplorationFog(this.terrain.columns, this.terrain.rows);
@@ -64,6 +65,16 @@ export class GridScene extends Phaser.Scene {
     this.keys = keyboard.addKeys("W,A,S,D,R,G", false) as typeof this.keys;
     if (this.defenseOptions) {
       this.defense = new DefenseDebug(this, this.terrain, this.player, this.defenseOptions, this.isVisible);
+    }
+    const retry = document.getElementById("retry-round");
+    if (retry && this.defenseOptions?.worldSeed !== undefined) {
+      const reset = (): void => this.reset();
+      retry.hidden = false;
+      retry.addEventListener("click", reset);
+      this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
+        retry.removeEventListener("click", reset);
+        retry.hidden = true;
+      });
     }
     this.input.on(Phaser.Input.Events.POINTER_MOVE, this.inspectPointer, this);
     this.input.on(Phaser.Input.Events.POINTER_DOWN, this.beginMining, this);

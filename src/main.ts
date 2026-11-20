@@ -1,15 +1,16 @@
 import Phaser from "phaser";
-import { BUILDING_BALANCE_PROFILES, DEFAULT_CHALLENGE_BUILDING_BALANCE, readBuildingBalance } from "./building-balance.ts";
+import { BUILDING_BALANCE_PROFILES, DEFAULT_CHALLENGE_BUILDING_BALANCE } from "./building-balance.ts";
 import { DEFENSE_LAYOUT, DEFENSE_TARGET, ENEMY_ENTRY } from "./defense-map.ts";
 import { DENSE_LONG_MAP_LAYOUT } from "./dense-long-map.ts";
 import { generateExpeditionBiomes } from "./expedition-biomes.ts";
-import { DIFFICULTY_PROFILES, readDifficulty } from "./expedition-difficulty.ts";
+import { DIFFICULTY_PROFILES } from "./expedition-difficulty.ts";
 import { addExpeditionApproach, addExpeditionTiers, PLAY_GENERATOR_VERSION } from "./expedition-terrain.ts";
 import {
   GENERATED_ENEMY_ENTRY, GENERATED_GOAL, generateExpeditionWorld,
 } from "./generated-map.ts";
 import { LONG_MAP_LAYOUT } from "./long-map.ts";
-import { MIDGAME_EXPERIMENTS, readMidgameExperiment } from "./midgame-experiments.ts";
+import { resolveLaunch } from "./launch-config.ts";
+import { MIDGAME_EXPERIMENTS } from "./midgame-experiments.ts";
 import { GridScene } from "./scene.ts";
 import { MAP_COLUMNS, MAP_ROWS } from "./terrain.ts";
 import { TILE_SIZE } from "./player.ts";
@@ -18,13 +19,11 @@ import { newWorldSeed, selectWorldSeed, worldSeedLabel } from "./world-seed.ts";
 import "./style.css";
 
 const params = new URLSearchParams(window.location.search);
-const defense = params.get("mode") === "defense";
-const play = params.get("mode") === "play";
-const difficulty = readDifficulty(params.get("difficulty"));
-const buildingBalance = difficulty === "challenge" ? readBuildingBalance(params.get("build")) : "control";
-const midgame = difficulty === "challenge" ? readMidgameExperiment(params.get("midgame")) : "control";
-const speed = params.get("speed");
-const fixture = params.get("map");
+const environment = import.meta.env.MODE === "regression" ? "regression" : import.meta.env.DEV ? "development" : "production";
+const { diagnostics, mode, fixture, difficulty, buildingBalance, midgame, fogEnabled, roundSpeed, debugControls, towerEvolution } =
+  resolveLaunch(params, environment);
+const defense = mode === "defense";
+const play = mode === "play";
 const wide = play || (fixture !== "fix01" && (defense || (fixture !== "single" && fixture !== "regression")));
 const world = wide ? generateExpeditionWorld(selectWorldSeed(params.get("seed"))) : undefined;
 const landscape = play && world ? generateExpeditionBiomes(world.layout, world.effectiveSeed) : undefined;
@@ -33,7 +32,7 @@ let layout: readonly string[];
 let phase: string;
 if (world) {
   layout = landscape ? addExpeditionApproach(addExpeditionTiers(landscape.layout, world.effectiveSeed)) : world.layout;
-  phase = play ? "P0-H" : "P0-B FIX02";
+  phase = !diagnostics ? "Playtest Build" : play ? "P0-H" : "P0-B FIX02";
 } else if (defense || fixture === "fix01") {
   layout = defense ? DEFENSE_LAYOUT : DENSE_LONG_MAP_LAYOUT;
   phase = "P0-B FIX01";
@@ -47,12 +46,13 @@ if (world) {
 const defenseOptions = play && world
   ? {
       entry: GENERATED_ENEMY_ENTRY, target: GENERATED_GOAL, worldSeed: world.effectiveSeed,
-      fogEnabled: params.get("fog") !== "off",
-      roundSpeed: speed === "wait-test" ? "wait-test" as const : speed === "test",
+      fogEnabled,
+      roundSpeed,
       difficulty,
       buildingBalance,
       midgame,
-      debugControls: params.get("debug") === "1",
+      debugControls,
+      towerEvolution,
     }
   : !defense ? undefined : wide
     ? { entry: GENERATED_ENEMY_ENTRY, target: GENERATED_GOAL }
@@ -63,11 +63,14 @@ const worldDetails = world ? worldSeedLabel(landscape ? { ...world, generatorVer
 if (play) {
   document.querySelector("h1")!.textContent = "掘进式生存塔防";
   document.getElementById("goal-status")!.textContent = "升级至 Lv.2 工具，挖通地形并抵达北端目标区";
+}
+if (play && diagnostics) {
   const select = document.querySelector<HTMLSelectElement>("#round-difficulty")!;
   for (const [id, profile] of Object.entries(DIFFICULTY_PROFILES)) {
     select.add(new Option(profile.label, id));
   }
   select.value = difficulty;
+  document.getElementById("round-difficulty-controls")!.hidden = false;
   select.addEventListener("change", () => {
     const url = new URL(window.location.href);
     if (select.value === "baseline") url.searchParams.delete("difficulty");

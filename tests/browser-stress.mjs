@@ -1,17 +1,12 @@
 import assert from 'node:assert/strict';
-import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright-core';
-import { preview } from 'vite';
+import { openBrowserTestServer } from './browser-regression-server.mjs';
 
-const host = '127.0.0.1';
-const root = fileURLToPath(new URL('..', import.meta.url));
-const server = await preview({ root, preview: { host, port: 0, strictPort: true } });
+const { url, close } = await openBrowserTestServer();
 try {
-  const address = server.httpServer?.address();
-  assert.ok(address && typeof address === 'object', 'Vite did not bind a TCP port');
   const browser = await chromium.launch({ channel: 'msedge' });
   try {
-    console.log(`Edge ${browser.version()} · Vite production · 1280 × 900 · 1250 ms per sample · seed 12 · fog off`);
+    console.log(`Edge ${browser.version()} · compiled regression build · 1280 × 900 · 1250 ms per sample · seed 12 · fog off`);
     for (const count of [50, 100, 250]) {
       const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
       const errors = [];
@@ -20,7 +15,7 @@ try {
       });
       page.on('pageerror', (error) => errors.push(error.message));
       try {
-        await page.goto(`http://${host}:${address.port}/?mode=play&seed=12&debug=1&fog=off`);
+        await page.goto(`${url}/?mode=play&seed=12&debug=1&fog=off`);
         await page.waitForFunction(() => document.querySelector('#defense-stats').dataset.active === '0');
         await page.locator('#expedition-stress-count').selectOption(String(count));
         const stats = await page.evaluate(async () => {
@@ -80,5 +75,5 @@ try {
     await browser.close();
   }
 } finally {
-  await server.close();
+  await close();
 }
