@@ -1,3 +1,121 @@
+# Excavation Survival Tower Defense — Playable Prototype
+
+[Weekly iterations and dated review cards](https://github.com/orgs/sd5913/projects/1/views/1)
+
+The full match entry point is **`?mode=play`**. On first entry a seed is generated. Use **`?mode=play&seed=12`** to reproduce the playtest map described in this document.
+
+The default map is **40 columns × 96 rows**, composed of three consecutive 32-row sections. There is roughly an 8 × 8 connected building area at the southern end; the further north you go, the more you have to dig on your own. Ordinary terrain contains irregular small hollows, fissures, rock clusters and short rock ridges. Coordinates are written as `(column, row)`, with the top-left corner at `(0, 0)`. In terrain debug mode, entering the green target area at the northern end displays **P0-A test complete**.
+
+FIX02 generates a random 32-bit seed when none is specified and appends it to the address bar. Clicking "New Game" uses a different seed; pressing `R` restores this match's initial map and durability. Copying the current address, or using a parameter such as `?seed=12`, reproduces the initial layout under the same generator version. Seeds range from 0 to 4294967295. Invalid parameters fall back to the default seed.
+
+The header shows the seed actually in use, the generator version and the fallback layout state. When terrain validation fails, the actual seed of the default layout and the originally requested seed are both displayed.
+
+| Address parameter | Map |
+| --- | --- |
+| `?mode=play` | Full match, with random terrain, fog, building, technology and win/loss conditions |
+| none | FIX02 default map |
+| `?mode=defense` | FIX02 default map with the defense debug panel |
+| `?map=fix01` | Original FIX01 dense long map, 24 × 96 |
+| `?mode=defense&map=fix01` | Original FIX01 defense lane, 24 × 96 |
+| `?map=regression` | Original A2 regression long map, 24 × 96 |
+| `?map=single` | Original A1 single map, 24 × 32 |
+
+## Getting started and testing
+
+Node.js 22.18+ (22.x) or 24+ is required. Run the following commands in this directory and open the local address shown in the terminal output.
+
+```powershell
+npm.cmd ci --cache .npm-cache
+npm.cmd run dev
+```
+
+| Input | Action |
+| --- | --- |
+| WASD | Continuous movement; hitting a wall slides along a passable direction |
+| Hold left mouse button | Dig the adjacent ordinary terrain above, below, left or right; once a tile is emptied you can keep aiming at the next one |
+| R | Restore terrain and all durability, return to the spawn point, and clear this round's completion state |
+| G | Toggle the grid display |
+
+Ordinary terrain starts at 5 HP and loses 1 HP per hit. When the tool is ready, pressing down lands a hit immediately, and afterwards you can attack again every 125 ms. Releasing the button or switching targets keeps that cooldown running. While on cooldown, holding down on a valid target lands the hit as soon as it expires. Holding continuously for about 0.5 seconds while the tool is ready empties a tile. Hovering shows the tile type, its coordinates and the remaining durability of ordinary terrain; damaged terrain gradually darkens. Once HP reaches zero, that tile becomes immediately passable.
+
+Digging locks onto a target once it starts. After emptying a tile you can keep holding the left button, aim at the next adjacent dirt tile, and continue digging as soon as the cooldown expires. When the next tile is temporarily out of reach, hold the left button and walk to an adjacent position to dig it. Releasing the left button, leaving the canvas, walking out of digging range before the tile is emptied, losing window focus, switching tabs, or resetting all end the current dig; durability already deducted is kept until this round is reset.
+
+FIX02 spawns at `(19, 92)`. First walk through the southern building area, then start digging north from the dirt layer at `(19, 83)`, or pick your own route from the side. The boundary between section 63/64 and section 31/32 marks a section edge. The camera shows about 18 tiles horizontally and adjusts its vertical range to the window's height and width. Returning to a previously dug position lets you inspect the retained durability and empty-space state.
+
+## Full match
+
+1. At the southern spawn you start with 8 economy, 4 wall cards, 2 tower cards, 1 economy building card and one technology facility. Click a building card, then click a visible unoccupied empty tile. When four same-type tier-1 buildings connect up/down/left/right they merge automatically; the position built first is kept and the other three tiles are released.
+2. Enemies enter from the southern entrance at `(30, 94)`. Normal mode gives you 2 minutes of preparation time and 1 minute of rest between attacks. Cover the enemy approach with towers and lay down walls. A tower kill awards 2 economy, and economy buildings keep producing. Wall numbers show remaining durability.
+3. The technology facility can spend 3 economy to randomly produce a building card, or 10 economy to research the Lv.2 tool. Advanced dirt layers require the Lv.2 tool. If the technology facility is destroyed by an attack, it can be rebuilt on the same spot to resume production, and the tool level already researched is kept until the end of this match.
+4. The map has plains, highlands and lakes, whose positions vary with the seed. Fog opens within the line of sight of the player and towers. Plains economy buildings produce faster; highlands economy buildings produce slower but give defense towers longer range and larger sight radius. Water cannot be crossed or dug open, so route around the shoreline.
+5. Going deep to the north raises the enemy stats of subsequent waves, and lingering for a long time increases the number of subsequent waves. Reaching the green target area at the northern end with the Lv.2 tool wins the match. If the player's HP reaches zero the match is lost, and the ending stops and cleans up combat.
+
+`R` restarts the same seed, restoring all terrain, buildings, cards, technology, fog and match state. Clicking "New Game" switches to a different seed. Copy the address to share this match's starting layout. The default match layout is generator v3.
+
+You can append `&speed=test` to the address to use a shortened prototype clock, append `&fog=off` to view the whole map, or append `&debug=1` to open the spawn and simultaneous-spawn stress test. Player HP, contact damage and wave pacing are all **PROTOTYPE_ONLY** debug values.
+
+## P0-B Defense Greybox
+
+Append `?mode=defense` to the local address. Hover an empty tile and press **B** to place a wall, **T** to place a test tower, or **X** to demolish. Choose the enemy count and the wall impact damage, then click "Spawn at South End". Enemies enter one by one from the fixed spawn point with an interval of at least 200 ms. While the spawn point is still occupied, the remaining enemies wait in a queue. The panel keeps a running tally of requests this round, actual spawns, pending spawns, alive, visible in camera and removed. Both placed walls and towers block movement.
+
+In FIX02 the spawn point `(30, 94)` sits in a small hollow at the southern end, separated from the building area. Once you dig east to open it up, you can place a test tower on nearby empty ground and verify that both enemies and buildings move correctly with the camera. Enemies still only move along the roads you have opened.
+
+To reproduce the original wall-impact and detour scenario, open `?mode=defense&map=fix01`. Walk north from `(11, 92)` and dig open `(11, 89)`. Build a wall at `(11, 87)` and each enemy can hit it once and disappear. After opening `(12, 87)`, enemies prefer to detour around the wall using the empty tile. A test tower can be placed at `(12, 90)` and automatically attacks enemies within its range. Numbers show the wall's remaining HP, and tower kills and wall impacts are counted separately.
+
+The greybox uses the northern test-building marker as its default target. After enabling "Player contact test", a straight orthogonal line within the test sight radius can trigger player priority and contact events. Walls start at 50 HP, and the test tower and spawn batch are verification parameters. The 50, 100 and 250 unit tiers are used only for stress observation. R restores the map, buildings and enemies.
+
+```powershell
+npm.cmd test                    # Map durability, digging timing and movement tests
+npm.cmd run typecheck           # TypeScript type checking
+npm.cmd run build               # Type checking and generation of dist/
+npm.cmd run preview             # Local preview of dist/
+npm.cmd run test:browser        # Verify the production build with installed Edge; build first
+npm.cmd run test:browser -- --normal-round # Also test a full clear with standard wave duration
+npm.cmd run test:browser -- --dev # Verify the dev server with installed Edge
+node tests/browser-stress.mjs   # Measure frame interval, active enemies and pathfinding of the production build with installed Edge
+```
+
+The Edge tests temporarily start Vite on a loopback address and verify old-map regressions, the FIX02 camera, map sectioning, a full match clear and a defeat through real keyboard/mouse input and canvas pixels. Setting `P0A_SCREENSHOT` or `FIX02_SCREENSHOT` specifies the local output path for the corresponding scenario screenshot. Multi-seed map constraints, terrain distribution, the spawn queue and pure simulation checks for 50, 100 and 250 units are included in `npm.cmd test`.
+
+## Directory and modules
+
+| File | Responsibility |
+| --- | --- |
+| `index.html`, `src/style.css` | Canvas container, control hints, debug panels and typography |
+| `src/main.ts`, `src/scene.ts` | Phaser bootstrap, scene input and module coordination |
+| `src/generated-map.ts` | Seeds, section templates and progressability validation of the default map |
+| `src/test-map.ts`, `src/long-map.ts`, `src/dense-long-map.ts`, `src/terrain.ts` | Fixed layouts, section terrain state, world-tile/section-tile conversion, durability and passability queries |
+| `src/mining-config.ts`, `src/mining.ts` | Test parameters, target locking and attacks settled by actual elapsed time |
+| `src/player.ts` | World coordinate conversion, continuous movement, player collision and reset |
+| `src/buildings.ts`, `src/enemy-navigation.ts` | Independent building occupancy, wall settlement and paths reused by target and topology version |
+| `src/defense-map.ts`, `src/defense-simulation.ts`, `src/defense-debug.ts` | Defense map, off-screen independent simulation and the visual debug entry point |
+| `src/expedition-round.ts`, `src/expedition-controls.ts` | Waves, attack pressure, win/loss and the match control panel |
+| `src/expedition-economy.ts`, `src/expedition-terrain.ts` | Card draws, resource income, research, advanced dirt layers and the southern approach |
+| `src/expedition-biomes.ts`, `src/biome-effects.ts`, `src/fog.ts` | Seeded biomes, biome income and exploration sight radius |
+| `src/renderer.ts`, `src/hud.ts` | Terrain textures, grid, the player and debug feedback |
+| `tests/terrain.test.mjs`, `tests/mining.test.mjs`, `tests/player.test.mjs` | Terrain, digging timing, collision and reset tests |
+| `tests/browser-smoke.mjs` | Regression tests using real Edge keyboard/mouse input and the canvas |
+| `package.json`, `package-lock.json`, `tsconfig.json`, `.gitignore` | Dependencies, scripts, type checking and generated-directory ignore rules |
+
+Terrain and collision both read `TerrainMap`. Each valid attack first updates the tile data, then redraws the target tile and refreshes the related debug info. Rendering only prepares canvas textures for the sections covered by the camera. When re-entering a section, the picture is generated from the terrain state retained in the data layer.
+
+## Map interface for P0-B reuse
+
+In `src/terrain.ts`, `TerrainMap` implements a `TerrainReader` that is independent of Phaser and pixel dimensions. Future callers can accept a `TerrainReader` and read the map through the following interface.
+
+| Interface | Behavior |
+| --- | --- |
+| `columns`, `rows` | Map dimensions |
+| `isInside({ col, row })` | Checks whether integer coordinates fall inside the map |
+| `getCell({ col, row })` | Returns immutable tile data, or `undefined` when out of bounds |
+| `isWalkable({ col, row })` | Returns `true` for empty ground with no building; entities, blocking buildings and out-of-bounds tiles return `false` |
+| `getWalkableNeighbors({ col, row })` | Returns adjacent passable tiles ordered north, east, south, west; passing out-of-bounds coordinates yields an empty list |
+| `revision` | Increments when terrain is cleared, building blocking changes or the map is reset; it can be used to invalidate path caches |
+
+`TerrainCell` provides `terrain`, `hp`, `maxHp`, `terrainLevel` and `buildingId`. Empty ground has durability `0/0`, and rock has `null` for both durability fields. `TerrainMap.applyDigDamage(from, target, damage)` uniformly validates and applies damage, and `reset()` restores the fixed layout and initial durability. Terrain that only lost durability is still an entity, and the passability `revision` keeps its original value.
+
+---
+
 # 《掘进式生存塔防》可玩原型
 
 完整对局入口为 **`?mode=play`**。首次进入会生成种子。使用 **`?mode=play&seed=12`** 可重现本文的试玩地图。
