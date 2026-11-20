@@ -75,11 +75,12 @@ test("pending preview follows eligible neighbors before the shared cooldown allo
   assert.deepEqual(mining.getTarget(origin, soft), hard, "the next damaged tile becomes the new lock");
 });
 
-test("target preview is absent while inactive, after an illegal first press, and after release or reset", () => {
+test("target preview is absent while inactive, after an undiggable adjacent press, and after release or reset", () => {
   const map = new TerrainMap();
   const mining = new MiningSession(map);
+  const west = { col: 10, row: 28 };
   assert.equal(mining.getTarget(map.spawn, north), null);
-  assert.equal(mining.begin(east, north, 0).result.reason, "out-of-reach");
+  assert.equal(mining.begin(map.spawn, west, 0).result.reason, "rock");
   assert.equal(mining.getTarget(map.spawn, north), null);
   assert.equal(mining.update(map.spawn, attackIntervalMs, north), undefined);
   assert.equal(map.getCell(north).hp, 5);
@@ -95,6 +96,129 @@ test("target preview is absent while inactive, after an illegal first press, and
   assert.equal(mining.getTarget(map.spawn, north), null);
   assert.equal(mining.update(map.spawn, 5 * attackIntervalMs, north), undefined);
   assert.equal(map.getCell(north).hp, 3);
+});
+
+test("a distant first press holds its original coordinates through approach, then continues only after clearing", () => {
+  const map = new TerrainMap();
+  const mining = new MiningSession(map);
+  const far = { col: 3, row: 25 };
+  const near = { col: 4, row: 25 };
+  const clicked = { col: 5, row: 25 };
+  const farAlternative = { col: 3, row: 26 };
+  const nearAlternative = { col: 4, row: 24 };
+  const mutablePointer = { ...clicked };
+  assert.equal(mining.begin(far, mutablePointer, 0).result.reason, "out-of-reach");
+  Object.assign(mutablePointer, farAlternative);
+
+  for (let time = 100; time <= 2_500; time += 100) {
+    assert.equal(mining.getTarget(far, farAlternative), null);
+    assert.equal(mining.update(far, time, farAlternative), undefined);
+  }
+  assert.equal(map.getCell(clicked).hp, 5);
+  assert.equal(map.getCell(farAlternative).hp, 5);
+  assert.equal(map.revision, 0);
+
+  const arrival = 2_501;
+  assert.deepEqual(mining.getTarget(near, nearAlternative), clicked);
+  assert.deepEqual(mining.update(near, arrival, nearAlternative), {
+    target: clicked, result: { effective: true, damage: 1, hp: 4, cleared: false },
+  });
+  assert.equal(mining.update(near, arrival, nearAlternative), undefined);
+  assert.equal(mining.update(near, arrival + attackIntervalMs - 1, nearAlternative), undefined);
+  for (let hit = 1; hit <= 4; hit += 1) {
+    const strike = mining.update(near, arrival + hit * attackIntervalMs, nearAlternative);
+    assert.deepEqual(strike.target, clicked);
+    assert.equal(strike.result.hp, 4 - hit);
+  }
+  const nextDeadline = arrival + 5 * attackIntervalMs;
+  assert.equal(map.getCell(nearAlternative).hp, 5);
+  assert.deepEqual(mining.getTarget(near, nearAlternative), nearAlternative);
+  assert.equal(mining.update(near, nextDeadline - 1, nearAlternative), undefined);
+  assert.deepEqual(mining.update(near, nextDeadline, nearAlternative), {
+    target: nearAlternative, result: { effective: true, damage: 1, hp: 4, cleared: false },
+  });
+});
+
+test("arriving early at a queued first target still obeys the previous strike's 125 ms deadline", () => {
+  const map = new TerrainMap();
+  const mining = new MiningSession(map);
+  const far = { col: 3, row: 25 };
+  const near = { col: 4, row: 25 };
+  const queued = { col: 5, row: 25 };
+  const previous = { col: 4, row: 24 };
+  assert.equal(attackIntervalMs, 125);
+  assert.equal(mining.begin(near, previous, 0).result.hp, 4);
+  mining.stop();
+  assert.equal(mining.begin(far, queued, 25).result.reason, "out-of-reach");
+  assert.equal(mining.update(far, 90, { col: 3, row: 26 }), undefined);
+  assert.deepEqual(mining.getTarget(near, previous), queued);
+  assert.equal(mining.update(near, 124, previous), undefined);
+  assert.equal(map.getCell(queued).hp, 5);
+  assert.equal(mining.update(near, 125, previous).result.hp, 4);
+  assert.equal(mining.update(near, 249, previous), undefined);
+  assert.equal(mining.update(near, 250, previous).result.hp, 3);
+  assert.equal(map.getCell(previous).hp, 4);
+});
+
+test("release, reset and a long interruption each discard a queued first target", () => {
+  const far = { col: 3, row: 25 };
+  const near = { col: 4, row: 25 };
+  const queued = { col: 5, row: 25 };
+  const other = { col: 4, row: 24 };
+  for (const cancel of [
+    (mining) => mining.stop(),
+    (mining) => mining.reset(),
+    (mining) => assert.equal(mining.update(far, 600), undefined),
+  ]) {
+    const map = new TerrainMap();
+    const mining = new MiningSession(map);
+    assert.equal(mining.begin(far, queued, 0).result.reason, "out-of-reach");
+    cancel(mining);
+    assert.equal(mining.getTarget(near, other), null);
+    assert.equal(mining.update(near, 620, other), undefined);
+    assert.equal(map.getCell(queued).hp, 5);
+    assert.equal(map.getCell(other).hp, 5);
+    assert.equal(mining.begin(near, queued, 621).result.hp, 4);
+  }
+});
+
+test("a queued tile that needs a better tool reports that reason on arrival and cancels", () => {
+  const far = { col: 3, row: 25 };
+  const near = { col: 4, row: 25 };
+  const hard = { col: 5, row: 25 };
+  const alternate = { col: 4, row: 24 };
+  const layout = [...TEST_MAP_LAYOUT];
+  const row = layout[hard.row];
+  layout[hard.row] = row.slice(0, hard.col) + "2" + row.slice(hard.col + 1);
+  const map = new TerrainMap(layout);
+  let tool = 1;
+  const mining = new MiningSession(map, MINING_CONFIG, () => tool);
+  assert.equal(mining.begin(far, hard, 0).result.reason, "out-of-reach");
+  assert.equal(mining.getTarget(near, alternate), null);
+  assert.deepEqual(mining.update(near, 100, alternate), {
+    target: hard, result: { effective: false, damage: 0, hp: 8, cleared: false, reason: "tool-level" },
+  });
+  tool = 2;
+  assert.equal(mining.getTarget(near, alternate), null);
+  assert.equal(mining.update(near, 110, alternate), undefined);
+  assert.equal(map.getCell(hard).hp, 8);
+  assert.equal(map.getCell(alternate).hp, 5);
+  assert.equal(mining.begin(near, alternate, 110).result.hp, 4, "Rejected approach must not spend a cooldown");
+});
+
+test("a queued tile cleared by another action rejects the first approach without mining a substitute", () => {
+  const map = new TerrainMap();
+  const mining = new MiningSession(map);
+  const far = { col: 3, row: 25 };
+  const near = { col: 4, row: 25 };
+  const queued = { col: 5, row: 25 };
+  const alternate = { col: 4, row: 24 };
+  assert.equal(mining.begin(far, queued, 0).result.reason, "out-of-reach");
+  assert.equal(map.applyDigDamage(near, queued, 5).cleared, true);
+  assert.equal(mining.getTarget(near, alternate), null);
+  assert.equal(mining.update(near, 125, alternate).result.reason, "empty");
+  assert.equal(mining.update(near, 250, alternate), undefined);
+  assert.equal(map.getCell(alternate).hp, 5);
 });
 
 test("mining strikes immediately, then once per elapsed interval until the locked tile clears", () => {
@@ -193,8 +317,9 @@ test("leaving range between attack deadlines ends the hold even if the player re
   assert.equal(map.getCell(northeast).hp, 5);
 
   assert.equal(mining.begin(east, north, 3 * attackIntervalMs).result.reason, "out-of-reach");
-  assert.equal(mining.update(map.spawn, 4 * attackIntervalMs), undefined);
-  assert.equal(map.getCell(north).hp, 4);
+  assert.equal(mining.getTarget(east, northeast), null);
+  assert.deepEqual(mining.getTarget(map.spawn, east), north);
+  assert.equal(mining.update(map.spawn, 4 * attackIntervalMs).result.hp, 3);
 });
 
 test("30, 60, and 144 FPS each clear dirt at the fifth scheduled attack", () => {

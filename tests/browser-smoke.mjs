@@ -44,7 +44,7 @@ try {
     if (process.argv.includes('--directional-mining')) {
       await withSmokePage(browser, { width: 1440, height: 1060 },
         (page) => runSingleMapSmoke(page, url + '/?map=single', { directionalOnly: true }));
-      console.log(`Edge smoke (${mode}, directional mining): passed; amber Canvas outlines, locked strikes, stationary-pointer turns, key order and cancellation, cooldown, release, and blur verified; no browser errors.`);
+      console.log(`Edge smoke (${mode}, directional mining): passed; queued out-of-range aiming, amber Canvas outlines, locked strikes, stationary-pointer turns, key order and cancellation, cooldown, release, and blur verified; no browser errors.`);
       await runWideMiningPreviewBrowserSmoke(browser, url, mode);
     } else if (process.argv.includes('--challenge')) {
       await runChallengeBrowserSmoke(browser, url, mode, true);
@@ -208,7 +208,7 @@ async function runWideMiningPreviewBrowserSmoke(browser, url, mode) {
 async function runStandardBrowserSmoke(browser, url, mode) {
     const dugTiles = await withSmokePage(browser, { width: 1440, height: 1060 },
       (page) => runSingleMapSmoke(page, `${url}/?map=single`));
-    console.log(`Edge smoke (${mode}, single map): passed; real rapid clicks and cross-target cooldown, hold/release, target lock and pointer/directional chaining after clearing, interruption, and ready-tool reset verified; ${dugTiles} tiles mined on the route; no browser errors.`);
+    console.log(`Edge smoke (${mode}, single map): passed; real rapid clicks and cross-target cooldown, hold/release, queued aiming, target lock and pointer/directional chaining after clearing, interruption, and ready-tool reset verified; ${dugTiles} tiles mined on the route; no browser errors.`);
 
     await runWideMiningPreviewBrowserSmoke(browser, url, mode);
 
@@ -549,6 +549,56 @@ async function runSingleMapSmoke(page, url, { directionalOnly = false } = {}) {
     await resetMap();
   }
 
+  async function verifyQueuedMiningApproach() {
+    const queued = { col: col + 1, row: row - 1 };
+    const decoy = { col, row: row - 2 };
+    const result = page.locator('#dig-result');
+    const player = page.locator('#player-cell');
+
+    for (const interruption of ['none', 'release', 'blur']) {
+      await dig(firstDig);
+      await inspectCell(queued, '可挖地形', 'HP 5/5');
+      await page.clock.pauseAt(await page.evaluate(() => Date.now() + 200));
+      try {
+        const approach = () => holdKey('KeyW', async () => {
+          await advanceTo(player, coordinates(firstDig));
+          if (interruption === 'none') {
+            await advanceTo(result, '剩余 4 HP', coordinates(queued));
+            await assertMiningPreview(queued, decoy);
+            await assertHoverHp(decoy, 5, 'Neither the cursor nor W may steal the queued attack');
+          }
+        });
+
+        await holdMouse(async () => {
+          const waiting = await result.textContent();
+          assert.ok(waiting.includes(coordinates(queued)), waiting);
+          assert.match(waiting, /上下左右相邻/);
+          assert.match(waiting, /按住左键.*(?:靠近|走近)/);
+          await inspectCell(decoy, '可挖地形', 'HP 5/5');
+          await page.clock.runFor(2 * attackIntervalMs);
+          assert.equal(await result.textContent(), waiting, 'Hover changes must not replace the original request');
+          await assertMiningPreview(null, queued, decoy);
+
+          if (interruption === 'release') return;
+          if (interruption === 'blur') {
+            await page.evaluate(() => window.dispatchEvent(new Event('blur')));
+            await page.clock.runFor(32);
+            await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+          }
+          await approach();
+        });
+        if (interruption === 'release') await approach();
+        await page.clock.runFor(2 * attackIntervalMs);
+        await assertMiningPreview(null, queued, decoy);
+        await assertHoverHp(decoy, 5, 'The other adjacent tile must remain untouched');
+        await inspectCell(queued, '可挖地形', interruption === 'none' ? 'HP 4/5' : 'HP 5/5');
+      } finally {
+        await page.clock.resume();
+      }
+      await resetMap();
+    }
+  }
+
   await page.clock.install();
   const response = await page.goto(url);
   assert.equal(response?.status(), 200, 'Game page must load');
@@ -558,6 +608,7 @@ async function runSingleMapSmoke(page, url, { directionalOnly = false } = {}) {
   if (directionalOnly) {
     await verifyDirectionalMining();
     await verifyMiningPreviewKeyOrder();
+    await verifyQueuedMiningApproach();
     return;
   }
 
@@ -785,5 +836,6 @@ async function runSingleMapSmoke(page, url, { directionalOnly = false } = {}) {
 
   await verifyDirectionalMining();
   await verifyMiningPreviewKeyOrder();
+  await verifyQueuedMiningApproach();
   return dugCells.length;
 }

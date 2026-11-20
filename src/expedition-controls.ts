@@ -84,6 +84,7 @@ export class ExpeditionControls {
   private readonly spawn = field<HTMLButtonElement>("expedition-spawn");
   private readonly stress = field<HTMLButtonElement>("expedition-stress");
   private readonly cards = new Map(CARD_KINDS.map((kind) => [kind, field<HTMLButtonElement>(`card-${kind}`)]));
+  private readonly placementCost = field("card-placement-cost");
   private readonly balance = field("economy-balance");
   private readonly makeCard = field<HTMLButtonElement>("make-card");
   private readonly drawResult = field("card-draw-result");
@@ -158,6 +159,7 @@ export class ExpeditionControls {
     for (const [card, button] of this.cards) {
       button.addEventListener("click", () => {
         this.selected = this.selected === card ? undefined : card;
+        write(this.placementCost, "");
         this.showFeedback(this.selected ? `点击空地放置${BUILDING_NAMES[card]}` : "已取消选择");
         this.refresh();
       }, options);
@@ -170,6 +172,7 @@ export class ExpeditionControls {
     }, options);
     scene.events.once("shutdown", () => {
       events.abort();
+      write(this.placementCost, "");
       this.clearDrawFeedback();
       write(this.drawSummary, "");
       this.previewPlacement(null);
@@ -219,6 +222,7 @@ export class ExpeditionControls {
       return true;
     }
 
+    const before = this.economy.cards[selected];
     const building = this.economy.placeCard(selected, cell);
     if (!building) {
       this.showFeedback("当前无法在该格建造");
@@ -227,7 +231,9 @@ export class ExpeditionControls {
     const name = BUILDING_NAMES[selected];
     const position = `(${building.cell.col}, ${building.cell.row})`;
     this.showFeedback(building.level === 2 ? `已合成${name} Lv.2 ${position}` : `已建造${name} ${position}`);
-    if (!this.economy.cards[selected]) this.selected = undefined;
+    const after = this.economy.cards[selected];
+    write(this.placementCost, `消耗：${name}卡 ×${before - after} · 库存：${before} → ${after}`);
+    this.selected = undefined;
     this.refresh();
     return true;
   }
@@ -350,6 +356,7 @@ export class ExpeditionControls {
     this.firstDrawReadyShown = false;
     this.firstTechnologyReadyShown = false;
     this.selected = undefined;
+    write(this.placementCost, "");
     this.clearDrawFeedback();
     for (const card of CARD_KINDS) this.drawnCards[card] = 0;
     write(this.drawSummary, "");

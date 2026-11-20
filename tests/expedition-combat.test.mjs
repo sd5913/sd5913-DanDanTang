@@ -259,6 +259,50 @@ test("an enemy at an unowned fallback resumes pursuit when a building becomes re
   assert.deepEqual([...simulation.enemies].map(({ id }) => id), [enemy.id]);
 });
 
+test("an enemy reselects the obscured player after destroying the last reachable building", () => {
+  const player = cell(7, 5);
+  const rock = cell(6, 5);
+  const site = cell(4, 5);
+  const secondSite = cell(5, 4);
+  const detour = [cell(5, 6), cell(6, 6), cell(7, 6)];
+  const map = makeMap({ corridor: [entry, player, site, secondSite, ...detour] });
+  const first = map.placeBuilding("technology", site);
+  const second = map.placeBuilding("economy", secondSite);
+  const { simulation, events } = runCombat(map);
+  simulation.spawn(1, 1);
+
+  simulation.step(150, player);
+  simulation.step(150, player);
+  assert.deepEqual(events.filter(({ type }) => type === "buildingHit").map(({ buildingId }) => buildingId),
+    [first.id, second.id], "Reachable buildings keep priority while the player is obscured");
+  const [survivor] = simulation.enemies;
+  assert.equal(simulation.spawnCounts.removed, 0);
+
+  simulation.step(200, player);
+  assert.deepEqual(survivor.cell, detour[0], "The survivor follows the open detour without seeing the player");
+  assert.equal(simulation.counters.playerContacts, 0);
+  simulation.step(600, player);
+  assert.deepEqual(events.filter(({ type }) => type === "playerHit").map(({ enemyId }) => enemyId), [survivor.id]);
+  assert.equal(map.getCell(rock).terrain, "rock");
+});
+
+test("an enemy cannot pursue a player who is genuinely cut off after a building is destroyed", () => {
+  const player = cell(7, 5);
+  const site = cell(4, 5);
+  const map = makeMap({ corridor: [entry, player, site] });
+  assert.ok(map.placeBuilding("technology", site));
+  const { simulation, events } = runCombat(map);
+  simulation.spawn(1, 1);
+  simulation.step(150, player);
+  simulation.step(1_000, player);
+
+  assert.equal(events.filter(({ type }) => type === "buildingHit").length, 1);
+  const [survivor] = simulation.enemies;
+  assert.deepEqual(survivor.cell, entry);
+  assert.equal(survivor.unreachable, true);
+  assert.equal(simulation.counters.playerContacts, 0);
+});
+
 test("250 active play enemies reuse one measured route field for multiple owned structures", () => {
   const map = makeMap();
   for (const target of [cell(15, 6), cell(18, 7), cell(16, 17), cell(9, 24), cell(18, 26), cell(21, 27)]) {

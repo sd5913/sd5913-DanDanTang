@@ -87,7 +87,8 @@ export class DebugHud {
     const { result, target } = strike;
     if (!result.effective) {
       this.dig.dataset.outcome = "rejected";
-      writeStatus(this.dig, `${DIG_FAILURE_MESSAGES[result.reason]} · ${coordinates(target)}`);
+      const hint = strike.waitingForReach ? " · 按住左键走近后开挖" : "";
+      writeStatus(this.dig, `${DIG_FAILURE_MESSAGES[result.reason]}${hint} · ${coordinates(target)}`);
       return;
     }
 

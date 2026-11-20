@@ -8,6 +8,7 @@ import { openWideGame, playFixture } from './browser-fix02.mjs';
 const { layout } = playFixture();
 const cell = (col, row) => ({ col, row });
 const label = ({ col, row }) => `(${col}, ${row})`;
+const cardNames = { wall: '城墙', tower: '防御塔', economy: '经济建筑' };
 const reasons = {
   'out-of-range': /距离过远|周围一格/,
   'player-cell': /脚下|自身|玩家所在格/,
@@ -20,9 +21,11 @@ async function openBuildScene(page, url) {
   const game = await openWideGame(page, url, layout);
   const preview = page.locator('#build-preview');
   const feedback = page.locator('#expedition-feedback');
+  const cost = page.locator('#card-placement-cost');
+  const cards = Object.fromEntries(Object.keys(cardNames).map((kind) => [kind, page.locator('#card-' + kind)]));
 
   async function select(kind) {
-    const button = page.locator(`#card-${kind}`);
+    const button = cards[kind];
     if (await button.getAttribute('aria-pressed') !== 'true') await button.click();
     assert.equal(await button.getAttribute('aria-pressed'), 'true');
   }
@@ -47,9 +50,15 @@ async function openBuildScene(page, url) {
   async function reject(target, reason) {
     const color = await aim(target, reason);
     const before = await readCardInventory(page);
+    const selected = await page.locator('#expedition-panel button[aria-pressed="true"]').getAttribute('id');
+    assert.equal(await cost.textContent(), '');
     await click();
     assert.match(await feedback.textContent(), reasons[reason]);
     assert.deepEqual(await readCardInventory(page), before, 'An illegal placement must retain all cards');
+    assert.equal(await page.locator('#expedition-panel button[aria-pressed="true"]').getAttribute('id'), selected,
+      'A rejected placement must keep the same card selected');
+    assert.equal(await preview.getAttribute('data-reason'), reason);
+    assert.equal(await cost.textContent(), '', 'A rejected placement must not show a deduction');
     return color;
   }
 
@@ -60,6 +69,12 @@ async function openBuildScene(page, url) {
     await click();
     assert.deepEqual(await readCardInventory(page), { ...before, [kind]: before[kind] - 1 });
     assert.match(await feedback.textContent(), /已建造|已合成/);
+    for (const button of Object.values(cards)) assert.equal(await button.getAttribute('aria-pressed'), 'false');
+    assert.ok(await preview.isHidden(), 'Successful placement must clear its preview');
+    assert.equal(await preview.getAttribute('data-state'), null);
+    assert.equal(await cost.getAttribute('role'), 'status');
+    assert.ok(await cost.isVisible());
+    assert.equal(await cost.textContent(), `消耗：${cardNames[kind]}卡 ×1 · 库存：${before[kind]} → ${before[kind] - 1}`);
     return color;
   }
 
@@ -74,13 +89,14 @@ async function openBuildScene(page, url) {
     assert.deepEqual(await game.position(), GENERATED_SPAWN);
     assert.deepEqual(await readCardInventory(page), ECONOMY_PROTOTYPE.initialCards);
     assert.ok(await preview.isHidden());
+    assert.equal(await cost.textContent(), '');
   }
 
-  return { game, preview, feedback, select, aim, reject, place, buildingAt, reset };
+  return { game, preview, feedback, cost, select, aim, click, reject, place, buildingAt, reset };
 }
 
 export async function runBuildRangeSmoke(page, url) {
-  const { game, preview, feedback, select, reject, place, buildingAt, reset } = await openBuildScene(page, url);
+  const { game, preview, feedback, cost, select, click, reject, place, buildingAt, reset } = await openBuildScene(page, url);
   assert.ok(await page.locator('#defense-panel').isHidden());
   assert.ok(await page.locator('#expedition-spawn').isHidden());
   assert.ok(await preview.isHidden());
@@ -105,7 +121,20 @@ export async function runBuildRangeSmoke(page, url) {
   const validColor = await place('wall', diagonal);
   assert.notEqual(validColor, invalidColor, 'The build preview must show two distinct visual cues');
   assert.match(await buildingAt(diagonal), /^城墙 \(21, 91\)/);
+
+  const nearbyDirt = cell(20, 93);
+  await game.inspect(nearbyDirt, '可挖地形', 'HP 5/5');
+  await click();
+  await game.inspect(nearbyDirt, '可挖地形', 'HP 4/5');
+  assert.match(await page.locator('#dig-result').textContent(), /命中.*\(20, 93\)/);
+  assert.equal(await cost.textContent(), '消耗：城墙卡 ×1 · 库存：4 → 3');
+
+  await select('wall');
   await reject(diagonal, 'occupied');
+
+  const tower = cell(21, 92);
+  await place('tower', tower);
+  assert.match(await buildingAt(tower), /^防御塔 \(21, 92\)/);
 
   const cardinal = cell(20, 91);
   await place('economy', cardinal);

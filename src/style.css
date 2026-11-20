@@ -133,6 +133,7 @@ h1 {
 #card-draw-symbol { flex: none; }
 .card-draw-reason { color: #f0bda5; }
 .card-draw-summary { color: var(--muted); }
+.card-placement-cost { color: #ffe5b4; font-weight: 600; }
 .defense-controls button[data-count="0"] { color: var(--muted); }
 
 .build-preview {

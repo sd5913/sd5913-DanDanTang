@@ -11,13 +11,13 @@ export interface MiningTool {
 export interface MiningStrike {
   readonly target: GridPosition;
   readonly result: DigResult;
+  readonly waitingForReach?: true;
 }
 
-interface ActiveMining {
-  // A cleared target leaves the hold active for the next adjacent tile.
-  readonly target: GridPosition | null;
-  lastUpdateMs: number;
-}
+type ActiveMining = { lastUpdateMs: number } & (
+  | { readonly state: "approaching" | "locked"; readonly target: GridPosition }
+  | { readonly state: "continuing"; readonly target: null }
+);
 
 export class MiningSession {
   private readonly map: Pick<TerrainMap, "getDigFailure" | "applyDigDamage">;
@@ -47,14 +47,19 @@ export class MiningSession {
 
     // A legal press during cooldown locks its target without spending a strike.
     if (nowMs < this.nextAttackMs && !this.map.getDigFailure(from, target, toolLevel)) {
-      this.active = { target, lastUpdateMs: nowMs };
+      this.active = { state: "locked", target, lastUpdateMs: nowMs };
       return;
     }
 
     const result = this.map.applyDigDamage(from, target, this.tool.damage, toolLevel);
     if (result.effective) {
       this.nextAttackMs = nowMs + this.tool.attackIntervalMs;
-      this.active = { target: result.cleared ? null : target, lastUpdateMs: nowMs };
+      this.active = result.cleared
+        ? { state: "continuing", target: null, lastUpdateMs: nowMs }
+        : { state: "locked", target, lastUpdateMs: nowMs };
+    } else if (result.reason === "out-of-reach" && (from.col !== col || from.row !== row)) {
+      this.active = { state: "approaching", target, lastUpdateMs: nowMs };
+      return { target, result, waitingForReach: true };
     }
     return { target, result };
   }
@@ -81,6 +86,13 @@ export class MiningSession {
     active.lastUpdateMs = nowMs;
 
     const toolLevel = this.getToolLevel();
+    if (active.state === "approaching") {
+      const failure = this.map.getDigFailure(from, active.target, toolLevel);
+      if (failure === "out-of-reach" || (!failure && nowMs < this.nextAttackMs)) return;
+      // Start the attack cadence upon reaching the clicked tile.
+      return this.begin(from, active.target, nowMs);
+    }
+
     const target = this.selectTarget(from, nextCell, toolLevel);
     if (!target) {
       if (active.target) this.stop();
@@ -104,7 +116,7 @@ export class MiningSession {
       result = strike;
       this.nextAttackMs += this.tool.attackIntervalMs;
       if (strike.cleared) {
-        this.active = { target: null, lastUpdateMs: nowMs };
+        this.active = { state: "continuing", target: null, lastUpdateMs: nowMs };
         break;
       }
     }
