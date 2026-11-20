@@ -4,6 +4,7 @@ const COLUMNS = 40;
 const ROWS_PER_REGION = 32;
 const ROWS = ROWS_PER_REGION * 3;
 export const DEFAULT_MAP_SEED = 20261120;
+export const EXPEDITION_GENERATOR_VERSION = 1;
 export const GENERATED_SPAWN = { col: 19, row: 92 } as const;
 export const GENERATED_GOAL = { col: 19, row: 4 } as const;
 export const GENERATED_ENEMY_ENTRY = { col: 30, row: 94 } as const;
@@ -12,6 +13,15 @@ type Marker = "#" | "+" | "." | "S" | "G";
 type Anchor = readonly [col: number, row: number];
 type Shape = readonly string[];
 type RandomIndex = (limit: number) => number;
+type LayoutLookup = (seed: number) => readonly string[] | undefined;
+
+export interface ExpeditionWorld {
+  readonly layout: readonly string[];
+  readonly requestedSeed: number;
+  readonly effectiveSeed: number;
+  readonly generatorVersion: typeof EXPEDITION_GENERATOR_VERSION;
+  readonly usedFallback: boolean;
+}
 
 interface RegionTemplate {
   readonly pockets: readonly Anchor[];
@@ -151,7 +161,7 @@ function stampNear(
   }
 }
 
-function buildGrid(seed: number): Marker[][] {
+function buildLayout(seed: number): readonly string[] {
   const choose = randomIndex(seed);
   const grid: Marker[][] = Array.from({ length: ROWS }, (_, row) => Array.from(
     { length: COLUMNS },
@@ -164,14 +174,14 @@ function buildGrid(seed: number): Marker[][] {
     for (const anchor of template.ridges) stampNear(grid, chunk, anchor, RIDGES, "#", choose);
     for (const anchor of template.stones) stampNear(grid, chunk, anchor, STONES, "#", choose);
   }
-  return grid;
+  return grid.map((row) => row.join(""));
 }
 
 function cellIndex({ col, row }: GridPosition): number {
   return row * COLUMNS + col;
 }
 
-function connected(grid: Marker[][], origin: GridPosition, canEnter: (cell: Marker) => boolean): Set<number> {
+function connected(grid: readonly string[], origin: GridPosition, canEnter: (cell: string) => boolean): Set<number> {
   const seen = new Set<number>();
   if (!canEnter(grid[origin.row][origin.col])) return seen;
   const pending = [origin];
@@ -190,11 +200,18 @@ function connected(grid: Marker[][], origin: GridPosition, canEnter: (cell: Mark
   return seen;
 }
 
-function isOpen(cell: Marker): boolean {
+function isOpen(cell: string): boolean {
   return cell === "." || cell === "S" || cell === "G";
 }
 
-function isValid(grid: Marker[][]): boolean {
+function isValid(grid: readonly string[] | undefined): grid is readonly string[] {
+  if (!grid || grid.length !== ROWS || grid.some((row) => row.length !== COLUMNS || /[^#+.SG]/.test(row))) return false;
+  const { col: spawnCol, row: spawnRow } = GENERATED_SPAWN;
+  if (grid.some((row, index) => index === spawnRow
+    ? row.indexOf("S") !== spawnCol || row.lastIndexOf("S") !== spawnCol
+    : row.includes("S"))) return false;
+  if (grid[GENERATED_GOAL.row][GENERATED_GOAL.col] !== "G") return false;
+
   const home = connected(grid, GENERATED_SPAWN, isOpen);
   const goal = cellIndex(GENERATED_GOAL);
   const entry = cellIndex(GENERATED_ENEMY_ENTRY);
@@ -206,16 +223,33 @@ function isValid(grid: Marker[][]): boolean {
     for (let col = 0; col <= COLUMNS - 5; col += 1) {
       // A wholly open window that touches home is part of the same open component.
       if (!isOpen(grid[row][col]) || home.has(cellIndex({ col, row }))) continue;
-      if (grid.slice(row, row + 5).every((line) => line.slice(col, col + 5).every(isOpen))) return false;
+      if (grid.slice(row, row + 5).every((line) => !/[#+]/.test(line.slice(col, col + 5)))) return false;
     }
   }
   return true;
 }
 
+function validatedLayout(seed: number, lookup: LayoutLookup): readonly string[] | undefined {
+  const layout = lookup(seed);
+  return isValid(layout) ? layout : undefined;
+}
+
+export function generateExpeditionWorld(seed = DEFAULT_MAP_SEED, tryLayout: LayoutLookup = buildLayout): ExpeditionWorld {
+  const requestedSeed = Number.isInteger(seed) && seed >= 0 && seed <= 0xffff_ffff ? seed : DEFAULT_MAP_SEED;
+  const requestedLayout = validatedLayout(requestedSeed, tryLayout);
+  const effectiveSeed = requestedLayout ? requestedSeed : DEFAULT_MAP_SEED;
+  const layout = requestedLayout ?? (requestedSeed !== DEFAULT_MAP_SEED ? validatedLayout(effectiveSeed, tryLayout) : undefined);
+  if (!layout) throw new Error("Expedition map templates could not produce a valid fallback layout");
+
+  return {
+    layout,
+    requestedSeed,
+    effectiveSeed,
+    generatorVersion: EXPEDITION_GENERATOR_VERSION,
+    usedFallback: effectiveSeed !== requestedSeed,
+  };
+}
+
 export function generateExpeditionMap(seed = DEFAULT_MAP_SEED): readonly string[] {
-  const selected = Number.isInteger(seed) && seed >= 0 && seed <= 0xffff_ffff ? seed : DEFAULT_MAP_SEED;
-  const grid = buildGrid(selected);
-  if (isValid(grid)) return grid.map((row) => row.join(""));
-  if (selected !== DEFAULT_MAP_SEED) return generateExpeditionMap(DEFAULT_MAP_SEED);
-  throw new Error("Expedition map templates could not produce a valid fallback layout");
+  return generateExpeditionWorld(seed).layout;
 }

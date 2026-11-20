@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { GENERATED_ENEMY_ENTRY, GENERATED_GOAL, GENERATED_SPAWN, generateExpeditionMap } from '../src/generated-map.ts';
+import { DEFAULT_MAP_SEED, GENERATED_ENEMY_ENTRY, GENERATED_GOAL, GENERATED_SPAWN, generateExpeditionMap } from '../src/generated-map.ts';
 import { MINING_CONFIG } from '../src/mining-config.ts';
 import { TILE_SIZE } from '../src/player.ts';
 
@@ -160,6 +160,7 @@ export async function runFix02MapSmoke(page, url) {
   const initial = await game.view();
   near(initial.top + initial.height, worldHeight, 'The starting camera must clamp to the bottom');
   assert.ok(await page.locator('#defense-panel').isHidden());
+  assert.ok(await page.getByRole('button', { name: '新开一局', exact: true }).isVisible());
   if (process.env.FIX02_SCREENSHOT) await page.screenshot({ path: process.env.FIX02_SCREENSHOT, fullPage: true });
 
   const lockOrigin = { col: 21, row: 92 };
@@ -267,4 +268,87 @@ export async function runFix02DefenseSmoke(page, url) {
   assertSameColor(await game.tilePixel(tower), idleTower, 'Resized camera must keep the tower on its world cell');
   await game.holdKey('KeyX', () => page.clock.runFor(48));
   assert.doesNotMatch(await defenseHover.textContent(), /测试塔/);
+}
+
+export async function runFix02RoundSmoke(page, url) {
+  const randomReadKey = 'estd-round-smoke-random-reads';
+  await page.addInitScript(({ sequence, key }) => {
+    const original = crypto.getRandomValues.bind(crypto);
+    Object.defineProperty(crypto, 'getRandomValues', { value(values) {
+      if (!(values instanceof Uint32Array) || values.length !== 1) return original(values);
+      const readCount = Number(sessionStorage.getItem(key) ?? 0);
+      sessionStorage.setItem(key, String(readCount + 1));
+      if (readCount >= sequence.length) return original(values);
+      values[0] = sequence[readCount];
+      return values;
+    } });
+  }, { sequence: [12, 12, 42], key: randomReadKey });
+
+  const marker = 'round-smoke';
+  const initialUrl = new URL(url);
+  initialUrl.searchParams.set('mode', 'defense');
+  initialUrl.searchParams.set('from', marker);
+  const game = await openWideGame(page, initialUrl.href);
+  const roundButton = page.getByRole('button', { name: '新开一局', exact: true });
+  const dugTile = { col: GENERATED_SPAWN.col, row: GENERATED_SPAWN.row + 1 };
+
+  async function assertRound(expectedSeed, expectedReads) {
+    const label = `P0-B FIX02 / 40 × 96 · 种子 ${expectedSeed} · 生成器 v1 · 备用布局 未启用`;
+    await page.waitForFunction((text) => document.querySelector('#map-size')?.textContent === text
+      && Number(document.querySelector('#visible-chunks')?.dataset.worldWidth) > 0, label);
+    const parameters = new URL(page.url()).searchParams;
+    assert.equal(parameters.get('seed'), String(expectedSeed));
+    assert.equal(parameters.get('mode'), 'defense');
+    assert.equal(parameters.get('from'), marker);
+    assert.equal(await page.evaluate((key) => Number(sessionStorage.getItem(key)), randomReadKey), expectedReads);
+    assert.deepEqual(await game.position(), GENERATED_SPAWN);
+    assert.ok(await roundButton.isVisible());
+    assert.ok(await page.getByRole('button', { name: '南端生成' }).isVisible());
+  }
+
+  async function fingerprint() {
+    return page.locator('#board canvas').evaluate(async (canvas) => {
+      const pixels = canvas.getContext('2d').getImageData(0, 0, canvas.width, canvas.height).data;
+      const digest = await crypto.subtle.digest('SHA-256', pixels);
+      return Array.from(new Uint8Array(digest));
+    });
+  }
+
+  async function hitOnce() {
+    await game.inspect(dugTile, '可挖地形', `HP ${dirtMaxHp}/${dirtMaxHp}`);
+    await page.mouse.down({ button: 'left' });
+    await page.mouse.up({ button: 'left' });
+    await game.inspect(dugTile, `HP ${dirtMaxHp - 1}/${dirtMaxHp}`);
+  }
+
+  await assertRound(12, 1);
+  const initialFrame = await fingerprint();
+  const shareableUrl = page.url();
+  await hitOnce();
+  await game.holdKey('KeyR', () => page.clock.runFor(48));
+  assert.equal(page.url(), shareableUrl, 'R must preserve the current round URL');
+  await assertRound(12, 1);
+  await game.inspect(dugTile, '可挖地形', `HP ${dirtMaxHp}/${dirtMaxHp}`);
+
+  await page.mouse.move(2, 2);
+  await page.clock.resume();
+  assert.equal((await page.reload())?.status(), 200);
+  await assertRound(12, 1);
+  assert.deepEqual(await fingerprint(), initialFrame, 'The shared URL must reproduce the same initial canvas');
+
+  await page.clock.pauseAt(await page.evaluate(() => Date.now() + 200));
+  await hitOnce();
+  await page.clock.resume();
+  await Promise.all([
+    page.waitForURL((next) => next.searchParams.get('seed') === '42'),
+    roundButton.click(),
+  ]);
+  await assertRound(42, 3);
+  assert.notDeepEqual(await fingerprint(), initialFrame, 'The fresh seed must change the visible map');
+  await game.inspect(dugTile, '可挖地形', `HP ${dirtMaxHp}/${dirtMaxHp}`);
+
+  const invalidUrl = new URL(page.url());
+  invalidUrl.searchParams.set('seed', '4294967296');
+  assert.equal((await page.goto(invalidUrl.href))?.status(), 200);
+  await assertRound(DEFAULT_MAP_SEED, 3);
 }

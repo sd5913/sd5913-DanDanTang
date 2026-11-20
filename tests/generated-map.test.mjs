@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import test from "node:test";
 import {
-  DEFAULT_MAP_SEED, GENERATED_ENEMY_ENTRY, GENERATED_GOAL, GENERATED_SPAWN, generateExpeditionMap,
+  DEFAULT_MAP_SEED, EXPEDITION_GENERATOR_VERSION, GENERATED_ENEMY_ENTRY, GENERATED_GOAL,
+  GENERATED_SPAWN, generateExpeditionMap, generateExpeditionWorld,
 } from "../src/generated-map.ts";
 import { TerrainMap } from "../src/terrain.ts";
 
@@ -45,6 +47,57 @@ function regionCounts(map) {
     return counts;
   });
 }
+
+test("version 1 world metadata preserves exact generated layouts and normalizes an invalid request", () => {
+  const fingerprints = new Map([
+    [DEFAULT_MAP_SEED, "962540d2b7b9e6f038e783e02eda627b1783ebec2022598d5fc83d1df5d55992"],
+    [12, "93c5573c430c1eb161735a09cd8b262aa748028ea36e45c55965b2a709c82d1a"],
+    [13, "47325886d23f82f55cd3076bc692ddf758c1ee88d8dd886b5c6f89cbe9ebf9fb"],
+  ]);
+  assert.equal(EXPEDITION_GENERATOR_VERSION, 1);
+  for (const [seed, fingerprint] of fingerprints) {
+    const world = generateExpeditionWorld(seed);
+    assert.deepEqual(world, {
+      layout: generateExpeditionMap(seed), requestedSeed: seed, effectiveSeed: seed,
+      generatorVersion: 1, usedFallback: false,
+    });
+    assert.equal(createHash("sha256").update(world.layout.join("\n")).digest("hex"), fingerprint);
+  }
+  assert.deepEqual(generateExpeditionWorld(NaN), generateExpeditionWorld(DEFAULT_MAP_SEED));
+});
+
+test("sealed or oversized candidates report a verified world generated with the default seed", () => {
+  const fallback = generateExpeditionMap(DEFAULT_MAP_SEED);
+  const sealed = [...generateExpeditionMap(12)];
+  sealed[50] = "#".repeat(40);
+  const oversized = [...generateExpeditionMap(12)];
+  for (let row = 40; row < 45; row += 1) oversized[row] = oversized[row].slice(0, 32) + "....." + oversized[row].slice(37);
+  for (const unusable of [sealed, oversized, undefined]) {
+    const attempts = [];
+    const world = generateExpeditionWorld(12, (seed) => {
+      attempts.push(seed);
+      return seed === 12 ? unusable : fallback;
+    });
+    assert.deepEqual(attempts, [12, DEFAULT_MAP_SEED]);
+    assert.deepEqual(world, {
+      layout: fallback, requestedSeed: 12, effectiveSeed: DEFAULT_MAP_SEED,
+      generatorVersion: 1, usedFallback: true,
+    });
+  }
+});
+
+test("an invalid default layout fails deterministically without repeating the same attempt", () => {
+  const sealed = [...generateExpeditionMap(DEFAULT_MAP_SEED)];
+  sealed[50] = "#".repeat(40);
+  for (const requestedSeed of [12, DEFAULT_MAP_SEED]) {
+    const attempts = [];
+    assert.throws(() => generateExpeditionWorld(requestedSeed, (seed) => {
+      attempts.push(seed);
+      return sealed;
+    }), /could not produce a valid fallback layout/);
+    assert.deepEqual(attempts, requestedSeed === DEFAULT_MAP_SEED ? [DEFAULT_MAP_SEED] : [12, DEFAULT_MAP_SEED]);
+  }
+});
 
 test("seeded templates are reproducible, varied within each region, and use a safe default for invalid seeds", () => {
   const original = generateExpeditionMap();

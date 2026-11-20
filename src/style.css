@@ -38,7 +38,22 @@ h1 {
   font: 0.875rem Consolas, monospace;
 }
 
-.page-heading span { margin-inline: 0.25rem; }
+.round-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 0.75rem;
+}
+
+.round-controls button {
+  border: 1px solid #576c76;
+  border-radius: 0.25rem;
+  padding: 0.3rem 0.55rem;
+  background: #233138;
+  color: var(--mint);
+  font: inherit;
+  cursor: pointer;
+}
 
 .layout {
   display: grid;
