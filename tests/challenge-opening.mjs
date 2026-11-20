@@ -57,12 +57,12 @@ function isStarterOre(map, target) {
   return tile?.terrain === "dirt" && tile.terrainLevel === 1;
 }
 
-function createPlayTerrain(seed) {
+function createPlayTerrain(seed, buildingBalance) {
   const world = generateExpeditionWorld(seed);
   const { layout, biomes } = generateExpeditionBiomes(world.layout, world.effectiveSeed);
   const playLayout = addExpeditionApproach(addExpeditionTiers(layout, world.effectiveSeed));
   return {
-    map: new TerrainMap(playLayout, { biomes }),
+    map: new TerrainMap(playLayout, { biomes, buildingBalance }),
     effectiveSeed: world.effectiveSeed,
     fingerprint: createHash("sha256").update(JSON.stringify([playLayout, biomes])).digest("hex"),
   };
@@ -82,9 +82,9 @@ function initialOre(map) {
   return { openCells: open.queue.length, ore };
 }
 
-class OpeningRun {
-  constructor(seed, difficulty = "challenge") {
-    const { map, effectiveSeed, fingerprint } = createPlayTerrain(seed);
+export class OpeningRun {
+  constructor(seed, difficulty = "challenge", buildingBalance = "control") {
+    const { map, effectiveSeed, fingerprint } = createPlayTerrain(seed, buildingBalance);
     this.seed = seed;
     this.effectiveSeed = effectiveSeed;
     this.fingerprint = fingerprint;
@@ -104,6 +104,9 @@ class OpeningRun {
     this.construction = [];
     this.waves = [];
     this.combatEvents = [];
+    this.waveEnds = [];
+    this.clock = { stepped: 0, bulkSpans: 0, advancedFrames: 0 };
+    this.firstTenAtMs = null;
     this.firstIncomeAtMs = null;
     this.firstCanDrawAtMs = this.economy.drawFailure ? null : 0;
     this.firstDefenseDrawAtMs = null;
@@ -132,18 +135,27 @@ class OpeningRun {
     return {
       totals: this.economy.totals, cards: this.economy.cards, playerHp: this.round.playerHp,
       technologyHp: technology?.hp ?? null, toolLevel: this.economy.toolLevel,
-      buildings: Array.from(this.map.getBuildings(), ({ kind, level, cell, hp }) => ({ kind, level, cell, hp })),
+      buildings: Array.from(this.map.getBuildings(), ({ id, kind, level, cell, hp, maxHp }) => ({ id, kind, level, cell, hp, maxHp })),
     };
   }
 
-  tick(movement) {
-    if (this.round.phase === "lost") return;
-    this.now += frameMs;
+  get finished() { return this.round.phase === "won" || this.round.phase === "lost"; }
+
+  tick(movement, elapsedMs = frameMs) {
+    if (this.finished) return;
+    this.clock.stepped += 1;
+    this.clock.advancedFrames += elapsedMs / frameMs;
+    this.now += elapsedMs;
     movement?.();
+    if (this.map.isGoal(this.player.cell) && this.round.reachGoal(this.economy.toolLevel)) {
+      this.endAtMs = this.now;
+      this.simulation.clearBattle();
+      return;
+    }
     const phase = this.round.phase;
     const { spawned, removed, pending } = this.simulation.spawnCounts;
     const active = spawned - removed;
-    const order = this.round.update(frameMs, this.player.cell.row, active, pending);
+    const order = this.round.update(elapsedMs, this.player.cell.row, active, pending);
     if (order) {
       this.waves.push({
         atMs: this.now, order, economy: this.economicState(), playerCell: this.player.cell,
@@ -153,30 +165,55 @@ class OpeningRun {
     }
     if (phase === "attacking" && this.round.phase === "recovering") {
       this.simulation.finishAttackPhase(this.round.wave, active === 0 && pending === 0 ? "resolved" : "time-limit");
+      this.waveEnds.push({ waveId: this.round.wave, atMs: this.now, ...this.economicState() });
       if (this.round.wave === 1) {
         this.endOfFirstAttack = { atMs: this.now, recoveryMs: this.round.remainingMs, ...this.economicState() };
       }
     }
-    this.economy.advance(frameMs);
+    this.economy.advance(elapsedMs);
     this.observeAffordability();
-    this.simulation.step(frameMs, this.player);
+    this.simulation.step(elapsedMs, this.player);
+  }
+
+  idleUntil(limitMs, accelerated = false) {
+    const { spawned, removed, pending } = this.simulation.spawnCounts;
+    const waiting = this.round.phase === "preparing" || this.round.phase === "recovering";
+    const canSkipAffordabilitySample = this.firstCanDrawAtMs !== null || !this.economy.hasTechnology ||
+      !Array.from(this.map.getBuildings()).some(({ kind }) => kind === "economy");
+    // The final frame before a wave order is always advanced normally.
+    const interior = Math.min(limitMs - this.now, this.round.remainingMs - frameMs);
+    if (accelerated && waiting && spawned === removed && pending === 0 && canSkipAffordabilitySample && interior > frameMs) {
+      this.clock.bulkSpans += 1;
+      this.tick(undefined, Math.floor(interior / frameMs) * frameMs);
+    } else {
+      this.tick();
+    }
   }
 
   observeAffordability() {
+    if (this.economy.balance >= 10) this.firstTenAtMs ??= this.now;
     if (!this.economy.drawFailure) this.firstCanDrawAtMs ??= this.now;
   }
+
+  canMoveTo(target) { return reachable(this.map, this.player.cell).find(target) !== undefined; }
 
   moveTo(target) {
     const finish = reachable(this.map, this.player.cell).find(target);
     assert.ok(finish, `cannot walk to ${JSON.stringify(target)}`);
     for (const next of route(finish)) {
-      const from = this.player.cell;
-      for (let elapsed = 0; elapsed < moveMs && this.round.phase !== "lost"; elapsed += frameMs) {
-        this.tick(() => this.player.move(next.col - from.col, next.row - from.row, frameMs, this.map));
-      }
-      if (this.round.phase === "lost") return;
-      assert.deepEqual(this.player.position, cellCenter(next));
+      this.moveOne(next);
+      if (this.finished) return;
     }
+  }
+
+  moveOne(target) {
+    if (this.finished) return;
+    const from = this.player.cell;
+    assert.equal(distance(target, from), 1, "movement must trace a cardinal step");
+    for (let elapsed = 0; elapsed < moveMs && !this.finished; elapsed += frameMs) {
+      this.tick(() => this.player.move(target.col - from.col, target.row - from.row, frameMs, this.map));
+    }
+    if (!this.finished) assert.deepEqual(this.player.position, cellCenter(target));
   }
 
   mine(target) {
@@ -194,22 +231,22 @@ class OpeningRun {
       this.observeAffordability();
     };
     settle(this.mining.begin(from, target, this.now));
-    while (!this.map.isWalkable(target) && this.round.phase !== "lost") {
+    while (!this.map.isWalkable(target) && !this.finished) {
       assert.ok(this.now - startedAtMs < 3_000, "mining must make progress");
       this.tick();
-      if (this.round.phase !== "lost") settle(this.mining.update(from, this.now, target));
+      if (!this.finished) settle(this.mining.update(from, this.now, target));
     }
     this.mining.stop();
-    if (this.round.phase !== "lost") assert.equal(damage, before);
+    if (!this.finished) assert.equal(damage, before);
     this.miningActions.push({
       from, target, startedAtMs, finishedAtMs: this.now, damage,
       incomeTenths: toEconomyTenths(this.economy.totals.miningIncome ?? 0) - initialIncome,
     });
   }
 
-  mineToIncome(tenths, pauseMs = 0) {
+  mineToIncome(tenths, pauseMs = 0, deadlineMs = Infinity) {
     assert.equal(this.difficulty, "challenge");
-    while (toEconomyTenths(this.economy.totals.miningIncome) < tenths && this.round.phase !== "lost") {
+    while (toEconomyTenths(this.economy.totals.miningIncome) < tenths && !this.finished && this.now < deadlineMs) {
       const choices = [];
       for (const origin of reachable(this.map, this.player.cell).queue) {
         for (const target of adjacent(origin.cell)) {
@@ -220,11 +257,14 @@ class OpeningRun {
       const first = choices.sort((a, b) => a.origin.steps - b.origin.steps ||
         distance(this.map.spawn, a.target) - distance(this.map.spawn, b.target) ||
         b.target.row - a.target.row || a.target.col - b.target.col)[0];
+      if (!first && Number.isFinite(deadlineMs)) break;
       assert.ok(first, `seed ${this.seed} has no remaining accessible starter ore`);
+      if (this.now + first.origin.steps * moveMs + 5 * MINING_CONFIG.attackIntervalMs + pauseMs > deadlineMs) break;
       this.moveTo(first.origin.cell);
-      if (this.round.phase !== "lost") this.mine(first.target);
-      for (let elapsed = 0; elapsed < pauseMs && this.round.phase !== "lost"; elapsed += frameMs) this.tick();
+      if (!this.finished) this.mine(first.target);
+      for (let elapsed = 0; elapsed < pauseMs && !this.finished; elapsed += frameMs) this.tick();
     }
+    return toEconomyTenths(this.economy.totals.miningIncome) >= tenths;
   }
 
   draw() {
@@ -242,7 +282,7 @@ class OpeningRun {
     if (kind !== "technology" && this.economy.technologyCell) reserved.push(this.economy.technologyCell);
     return placementFailure(this.map, target, {
       playerPosition: this.player.position,
-      roundEnded: this.round.phase === "lost", visible: this.fog.visibility(target) === "visible",
+      roundEnded: this.finished, visible: this.fog.visibility(target) === "visible",
       reserved: reserved.some((cell) => sameCell(target, cell)),
       enemyOccupies: (position) => this.simulation.occupies(position), cardCount: this.economy.cards[kind],
     });
@@ -253,7 +293,9 @@ class OpeningRun {
     assert.equal(reason, undefined, `legal ${kind} placement at ${JSON.stringify(target)}`);
     const placed = this.economy.placeCard(kind, target);
     assert.ok(placed);
-    this.construction.push({ atMs: this.now, kind, target, from: this.player.cell });
+    this.construction.push({ atMs: this.now, kind, target, from: this.player.cell, id: placed.id,
+      level: placed.level, cell: placed.cell, hp: placed.hp, maxHp: placed.maxHp });
+    return placed;
   }
 
   fundFacility(pauseMs = 0) {
@@ -274,10 +316,11 @@ class OpeningRun {
       seed: this.seed, effectiveSeed: this.effectiveSeed, difficulty: this.difficulty, fingerprint: this.fingerprint,
       start: this.initial, finish: this.economicState(), elapsedMs: this.endAtMs ?? this.now,
       playerCell: this.player.cell, phase: this.round.phase, wave: this.round.wave,
-      firstIncomeAtMs: this.firstIncomeAtMs, firstCanDrawAtMs: this.firstCanDrawAtMs, firstDefenseDrawAtMs: this.firstDefenseDrawAtMs,
+      firstIncomeAtMs: this.firstIncomeAtMs, firstTenAtMs: this.firstTenAtMs,
+      firstCanDrawAtMs: this.firstCanDrawAtMs, firstDefenseDrawAtMs: this.firstDefenseDrawAtMs,
       initialOpenCells: this.setupResources.openCells, initialStarterDirt: this.setupResources.ore.size,
       miningActions: this.miningActions, draws: this.draws, construction: this.construction, facility: this.facility ?? null,
-      waves: this.waves, endOfFirstAttack: this.endOfFirstAttack,
+      waves: this.waves, waveEnds: this.waveEnds, endOfFirstAttack: this.endOfFirstAttack,
       combat: this.simulation.waveMetrics, combatEvents: this.combatEvents, economyHistory: this.history.snapshot(this.economy.totals),
     };
   }

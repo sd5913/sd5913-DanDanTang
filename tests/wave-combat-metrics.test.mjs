@@ -142,8 +142,13 @@ test("the first seeded wave destroys the initial facility but does not resolve a
   const economy = new ExpeditionEconomy(map, world.effectiveSeed, facilitySite);
   const facility = map.getBuilding(facilitySite);
   assert.equal(facility?.hp, 1);
-  const player = cell(22, 84);
+  const player = cell(19, 82);
+  const gate = cell(19, 83);
+  assert.equal(map.applyDigDamage(cell(19, 84), gate, 5).cleared, true);
+  assert.equal(map.applyDigDamage(gate, player, 5).cleared, true);
+  assert.ok(map.placeBuilding("wall", gate));
   assert.ok(map.isWalkable(player));
+  assert.deepEqual(map.getWalkableNeighbors(player), [], "The player is isolated behind a wall");
   const round = new ExpeditionRound(true);
   const events = [];
   const simulation = new DefenseSimulation(map, GENERATED_ENEMY_ENTRY, GENERATED_GOAL, (event, metadata) => {

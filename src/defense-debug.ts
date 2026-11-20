@@ -1,10 +1,12 @@
 import Phaser from "phaser";
+import { productionAttributes, towerAttributes } from "./building-balance.ts";
+import type { BuildingBalanceId } from "./building-balance.ts";
 import { overlapsCell, placementFailure } from "./build-placement.ts";
 import type { PlacementFailure, PlacementPreview } from "./build-placement.ts";
 import { DefenseSimulation, enemyWorldPosition, sameCell } from "./defense-simulation.ts";
 import type { DefenseEvent, DefenseEventMetadata } from "./defense-simulation.ts";
 import { ENEMY_RADIUS } from "./enemy-contact.ts";
-import type { BuildingKind } from "./buildings.ts";
+import type { Building, BuildingKind } from "./buildings.ts";
 import { BUILDING_NAMES, ExpeditionControls } from "./expedition-controls.ts";
 import type { CardKind } from "./expedition-economy.ts";
 import type { DifficultyId } from "./expedition-difficulty.ts";
@@ -59,6 +61,7 @@ export interface DefenseScenario {
   readonly fogEnabled?: boolean;
   readonly roundSpeed?: RoundSpeed;
   readonly difficulty?: DifficultyId;
+  readonly buildingBalance?: BuildingBalanceId;
   readonly debugControls?: boolean;
 }
 
@@ -77,6 +80,7 @@ export class DefenseDebug {
   private readonly status = field("defense-feedback");
   private readonly breach = field("round-breach");
   private readonly hover = field("defense-hover");
+  private readonly buildingStats = field("expedition-building-stats");
   private readonly count = field<HTMLSelectElement>("spawn-count");
   private readonly damage = field<HTMLSelectElement>("spawn-damage");
   private readonly playerTarget = field<HTMLInputElement>("test-player-target");
@@ -216,7 +220,28 @@ export class DefenseDebug {
     const description = building ? `${name} ${coordinates(building.cell)} · ${building.hp} HP${level}` : "—";
     write(this.hover, description);
     this.expedition?.showBuilding(description);
+    this.showBuildingStats(this.expedition ? building : undefined);
     return this.expedition?.previewPlacement(cell);
+  }
+
+  private showBuildingStats(building?: Building): void {
+    this.buildingStats.hidden = !building;
+    if (!building) return;
+    const { kind, cell, level } = building;
+    const { buildingBalance } = this.map;
+    const biome = this.map.getBiome(cell);
+    const prefix = `Lv.${level}`;
+    if (kind === "wall") {
+      write(this.buildingStats, `${prefix} · 耐久 ${building.hp}/${building.maxHp} HP`);
+    } else if (kind === "tower") {
+      const { damage, range, intervalMs } = towerAttributes(buildingBalance, level, biome);
+      write(this.buildingStats, `${prefix} · 伤害 ${damage} · 射程 ${range} 格 · 间隔 ${intervalMs} ms`);
+    } else if (kind === "economy") {
+      const { amount, intervalMs } = productionAttributes(buildingBalance, level, biome);
+      write(this.buildingStats, `${prefix} · 每 ${intervalMs} ms 产出 ${amount} 经济`);
+    } else {
+      write(this.buildingStats, prefix);
+    }
   }
 
   reset(): void {
@@ -292,7 +317,7 @@ export class DefenseDebug {
       write(this.status, "请选择未被占用的空地");
       return;
     }
-    const building = this.map.placeBuilding(kind, cell, kind === "wall" ? 50 : 1);
+    const building = this.map.placeBuilding(kind, cell);
     const name = kind === "wall" ? "城墙" : "测试塔";
     if (!building) {
       write(this.status, "只能在未占用的空地建造");

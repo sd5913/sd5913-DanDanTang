@@ -51,6 +51,7 @@
           <section id="round-panel" aria-labelledby="round-title" hidden>
             <h2 id="round-title">对局</h2>
             <label class="defense-controls">实验难度 <select id="round-difficulty"></select></label>
+            <label id="challenge-balance-controls" class="defense-controls" hidden>建筑实验 <select id="challenge-balance"></select></label>
             <p id="round-state" aria-live="polite"></p>
             <p id="round-breach" class="dig-result" data-outcome="rejected" role="status" hidden></p>
             <dl>
@@ -97,6 +98,7 @@
               </details>
             </div>
             <p id="expedition-building">—</p>
+            <p id="expedition-building-stats" hidden></p>
             <p id="expedition-feedback" class="dig-result" aria-live="polite">请选择建筑卡，或按住左键挖掘</p>
             <p id="build-preview" class="build-preview" role="status" hidden></p>
           </section>

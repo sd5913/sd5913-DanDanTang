@@ -1,5 +1,5 @@
 import type { Building } from "./buildings.ts";
-import { BIOME_PROTOTYPE } from "./biome-effects.ts";
+import { CONTROL_BUILDING_HP, PRODUCTION_LEVEL_ONE, productionAttributes } from "./building-balance.ts";
 import { DIFFICULTY_PROFILES } from "./expedition-difficulty.ts";
 import type { DifficultyEconomy, DifficultyId } from "./expedition-difficulty.ts";
 import type { DefenseEvent } from "./defense-simulation.ts";
@@ -42,12 +42,12 @@ export function fromEconomyTenths(tenths: number): number {
 export const ECONOMY_PROTOTYPE = Object.freeze({
   initialBalance: DIFFICULTY_PROFILES.baseline.economy.initialBalance,
   initialCards: DIFFICULTY_PROFILES.baseline.economy.initialCards,
-  productionIntervalMs: 4_000,
-  productionAmount: 1,
+  productionIntervalMs: PRODUCTION_LEVEL_ONE.intervalMs,
+  productionAmount: PRODUCTION_LEVEL_ONE.amount,
   towerKillReward: 2,
   drawCost: 3,
   drawWeights: Object.freeze({ wall: 1, tower: 1, economy: 1 }),
-  buildingHp: Object.freeze({ wall: 50, tower: 1, economy: 1, technology: 1 }),
+  buildingHp: CONTROL_BUILDING_HP,
   technologyCell: Object.freeze({ col: 17, row: 90 }),
 });
 
@@ -155,14 +155,12 @@ export class ExpeditionEconomy {
     if (!Number.isFinite(deltaMs) || deltaMs <= 0) return;
     for (const building of this.#map.getBuildings()) {
       if (building.kind !== "economy") continue;
-      const biome = this.#map.getBiome(building.cell);
-      const interval = biome === "plain" ? BIOME_PROTOTYPE.plainProductionMs : biome === "highland"
-        ? BIOME_PROTOTYPE.highlandProductionMs : ECONOMY_PROTOTYPE.productionIntervalMs;
+      const { amount, intervalMs } = productionAttributes(this.#map.buildingBalance, building.level, this.#map.getBiome(building.cell));
       const elapsed = (this.#productionMs.get(building.cell) ?? 0) + deltaMs;
-      const creditTenths = Math.floor(elapsed / interval) * toEconomyTenths(ECONOMY_PROTOTYPE.productionAmount);
+      const creditTenths = Math.floor(elapsed / intervalMs) * toEconomyTenths(amount);
       this.#balanceTenths += creditTenths;
       this.#totals.productionIncomeTenths += creditTenths;
-      this.#productionMs.set(building.cell, elapsed % interval);
+      this.#productionMs.set(building.cell, elapsed % intervalMs);
     }
   }
 
@@ -199,7 +197,7 @@ export class ExpeditionEconomy {
     if (!CARD_KINDS.includes(kind) || this.#cards[kind] <= 0) return undefined;
     const technology = this.technologyCell;
     if (technology && cell.col === technology.col && cell.row === technology.row) return undefined;
-    const building = this.#map.placeBuilding(kind, cell, ECONOMY_PROTOTYPE.buildingHp[kind]);
+    const building = this.#map.placeBuilding(kind, cell);
     if (building) this.updateCards(kind, -1);
     return building;
   }
@@ -223,7 +221,7 @@ export class ExpeditionEconomy {
   buildTechnology(cell: GridPosition): Building | undefined {
     const cost = this.technologyBuildCost;
     if (cost === undefined || this.technologyFailure) return undefined;
-    const building = this.#map.placeBuilding("technology", cell, ECONOMY_PROTOTYPE.buildingHp.technology);
+    const building = this.#map.placeBuilding("technology", cell);
     if (!building) return undefined;
     this.#builtTechnology = building;
     const costTenths = toEconomyTenths(cost);
@@ -234,7 +232,7 @@ export class ExpeditionEconomy {
 
   rebuildTechnology(): Building | undefined {
     if (this.technologyBuildCost !== undefined) return undefined;
-    return this.#map.placeBuilding("technology", this.#fixedTechnologyCell, ECONOMY_PROTOTYPE.buildingHp.technology);
+    return this.#map.placeBuilding("technology", this.#fixedTechnologyCell);
   }
 
   reset(): void {

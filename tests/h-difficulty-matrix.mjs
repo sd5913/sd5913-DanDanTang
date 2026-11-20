@@ -347,8 +347,12 @@ function compileScenario(seed, strategy, clock) {
     place("tower", 30, 93);
     line(23, 94);
     place("wall", 24, 94);
+    line(22, 94);
+    place("wall", 23, 94);
     line(21, 94);
+    place("wall", 22, 94);
     line(21, 92);
+    place("wall", 21, 93);
     line(plan.map.spawn.col, plan.map.spawn.row);
   } else {
     assert.equal(strategy, "tunnel");

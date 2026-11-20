@@ -115,7 +115,7 @@ h1 {
 #round-panel dl > div { display: flex; justify-content: space-between; gap: 0.25rem; }
 #round-panel dt { color: var(--muted); }
 #round-panel dd { font-variant-numeric: tabular-nums; }
-#expedition-debug[hidden] { display: none; }
+.defense-controls[hidden] { display: none; }
 
 .card-draw-result[data-card] {
   display: flex;

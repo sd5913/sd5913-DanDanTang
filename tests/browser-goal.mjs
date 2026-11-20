@@ -130,21 +130,24 @@ export function findDiggablePath(blockers) {
   return path;
 }
 
-export async function followRoute(page, game, route) {
+export async function followRoute(page, game, route, { stopAt, onStop } = {}) {
   const visitedBiomes = new Set();
+  const stopIndex = stopAt ? route.findIndex(({ col, row }) => col === stopAt.col && row === stopAt.row) : -1;
+  if (stopAt) assert.ok(stopIndex > 0, 'The chosen construction stop must be on the route');
   let start = 0;
   while (start < route.length - 1) {
     let end = start + 1;
     const stepCol = route[end].col - route[start].col;
     const stepRow = route[end].row - route[start].row;
     const biome = biomes[route[end].row][route[end].col];
-    while (end < route.length - 1 && route[end + 1].col - route[end].col === stepCol
+    while (end < route.length - 1 && end !== stopIndex && route[end + 1].col - route[end].col === stepCol
       && route[end + 1].row - route[end].row === stepRow
       && biomes[route[end + 1].row][route[end + 1].col] === biome) end += 1;
     await game.openLineTo(route[end], true);
     assert.equal(await page.locator('#expedition-biome').textContent(), BIOME_NAMES[biome]);
     visitedBiomes.add(biome);
     assert.notEqual((await readRound(page)).phase, 'lost', 'The defended expedition must survive to the next route turn');
+    if (end === stopIndex) await onStop?.();
     start = end;
   }
   assert.ok([...visitedBiomes].some((biome) => biome !== 'ordinary'), 'Victory must discover special terrain');

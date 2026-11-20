@@ -1,3 +1,5 @@
+import { wallHpMultiplier } from "./building-balance.ts";
+import type { BuildingBalanceId } from "./building-balance.ts";
 import type { GridPosition } from "./terrain.ts";
 
 export type BuildingKind = "wall" | "tower" | "economy" | "technology";
@@ -52,11 +54,13 @@ function compareGroups(a: readonly Building[], b: readonly Building[]): number {
 /** Stores buildings independently of terrain. Its map owner validates world coordinates. */
 export class BuildingStore {
   readonly #columns: number;
+  readonly #balance: BuildingBalanceId;
   readonly #occupied = new Map<number, Building>();
   #nextId = 1;
 
-  constructor(columns: number) {
+  constructor(columns: number, balance: BuildingBalanceId = "control") {
     this.#columns = columns;
+    this.#balance = balance;
   }
 
   get(cell: GridPosition): Building | undefined {
@@ -94,7 +98,10 @@ export class BuildingStore {
     if (!group) return undefined;
 
     const [incumbent, ...consumed] = group;
-    const upgraded = Object.freeze({ ...incumbent, level: 2 as const });
+    const maxHp = incumbent.kind === "wall" ? incumbent.maxHp * wallHpMultiplier(this.#balance, 2) : incumbent.maxHp;
+    if (!Number.isSafeInteger(maxHp)) return undefined;
+    const missingHp = incumbent.maxHp - incumbent.hp;
+    const upgraded = Object.freeze({ ...incumbent, level: 2 as const, maxHp, hp: maxHp - missingHp });
     for (const building of consumed) this.#occupied.delete(this.index(building.cell));
     this.#occupied.set(this.index(incumbent.cell), upgraded);
     return upgraded;

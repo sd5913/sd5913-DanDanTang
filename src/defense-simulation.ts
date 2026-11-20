@@ -1,6 +1,6 @@
 import { EnemyNavigation } from "./enemy-navigation.ts";
 import type { NavigationAction } from "./enemy-navigation.ts";
-import { BIOME_PROTOTYPE } from "./biome-effects.ts";
+import { TOWER_LEVEL_ONE, towerAttributes } from "./building-balance.ts";
 import type { Building, BuildingKind } from "./buildings.ts";
 import { boxDistance, ENEMY_RADIUS, sweepPlayerContact } from "./enemy-contact.ts";
 import type { PlayerContact } from "./enemy-contact.ts";
@@ -15,9 +15,9 @@ export const DEFENSE_CONFIG = {
   enemyHp: 2,
   spawnIntervalMs: 200,
   travelMs: 150,
-  towerDamage: 2,
-  towerRange: 5,
-  towerIntervalMs: 350,
+  towerDamage: TOWER_LEVEL_ONE.damage,
+  towerRange: TOWER_LEVEL_ONE.range,
+  towerIntervalMs: TOWER_LEVEL_ONE.intervalMs,
   playerSight: 6,
 } as const;
 
@@ -46,6 +46,7 @@ export interface EnemyState {
   readonly contactDamage: number;
   move?: EnemyMove;
   unreachable: boolean;
+  hasTargetedBuilding: boolean;
   targetKey?: string;
   contacted: boolean;
 }
@@ -80,7 +81,7 @@ export type DefenseEvent =
   | { type: "buildingHit"; enemyId: number; buildingId: string; buildingKind: BuildingKind; cell: GridPosition;
       damage: number; hp: number; destroyed: boolean }
   | { type: "wallImpact"; enemyId: number; wallId: string; damage: number; hp: number; destroyed: boolean }
-  | { type: "towerShot"; enemyId: number; towerId: string; from: GridPosition; to: Position }
+  | { type: "towerShot"; enemyId: number; towerId: string; from: GridPosition; to: Position; damage: number }
   | { type: "towerKill"; enemyId: number; towerId: string };
 
 export interface DefenseEventMetadata {
@@ -258,7 +259,7 @@ export class DefenseSimulation {
     const enemy: EnemyState = {
       id, spawnedAtMs: this.timeMs, cell: this.entry, point: cellCenter(this.entry),
       hp: profile.hp, wallDamage, contactDamage: profile.contactDamage,
-      unreachable: false, contacted: false,
+      unreachable: false, hasTargetedBuilding: false, contacted: false,
       ...(waveId === undefined ? {} : { waveId }),
     };
     this.units.set(id, enemy);
@@ -311,11 +312,12 @@ export class DefenseSimulation {
         budget -= duration;
       }
 
-      const { target, action } = this.chooseAction(enemy.cell, player?.cell);
+      const { target, action } = this.chooseAction(enemy, player?.cell);
       const key = target.buildingId ?? `${target.kind}:${target.cell.col},${target.cell.row}`;
       if (enemy.targetKey !== key) {
         enemy.targetKey = key;
         enemy.contacted = false;
+        if (target.buildingId !== undefined) enemy.hasTargetedBuilding = true;
         this.emitFor(enemy, { type: "targetSelected", enemyId: enemy.id, target }, target.cell);
         if (!this.units.has(enemy.id)) return;
       }
@@ -391,7 +393,10 @@ export class DefenseSimulation {
     this.exposureTowers = [];
     for (const building of this.map.getBuildings()) {
       this.threatBuildings.push(building.cell);
-      if (building.kind === "tower") this.exposureTowers.push({ cell: building.cell, radius: this.towerRange(building) });
+      if (building.kind === "tower") {
+        const { range } = towerAttributes(this.map.buildingBalance, building.level, this.map.getBiome(building.cell));
+        this.exposureTowers.push({ cell: building.cell, radius: range });
+      }
     }
     this.defenseAnchorsRevision = this.map.revision;
   }
@@ -405,11 +410,13 @@ export class DefenseSimulation {
     this.emit(event, { waveId: enemy.waveId, timeMs: this.timeMs, cell });
   }
 
-  private chooseAction(from: GridPosition, player?: GridPosition): { target: Target; action: NavigationAction } {
+  private chooseAction(enemy: Readonly<EnemyState>, player?: GridPosition): { target: Target; action: NavigationAction } {
+    const from = enemy.cell;
     if (this.expeditionCombat) {
+      let playerAction: NavigationAction | undefined;
       if (player && this.hasPlayerSight(from, player)) {
-        const action = this.actionToward(from, player, false);
-        if (action.kind !== "unreachable") return { target: { kind: "player", cell: player }, action };
+        playerAction = this.actionToward(from, player, false);
+        if (playerAction.kind !== "unreachable") return { target: { kind: "player", cell: player }, action: playerAction };
       }
 
       if (this.buildingRevision !== this.map.revision) {
@@ -420,6 +427,11 @@ export class DefenseSimulation {
       if (result) {
         const { building, action } = result;
         return { target: { kind: "building", cell: building.cell, buildingId: building.id }, action };
+      }
+      // Retarget existing attackers without alerting new spawns to a hidden player.
+      if (player && enemy.hasTargetedBuilding) {
+        const action = playerAction ?? this.actionToward(from, player, false);
+        if (action.kind !== "unreachable") return { target: { kind: "player", cell: player }, action };
       }
       return { target: this.buildingTarget, action: this.actionToward(from, this.buildingTarget.cell) };
     }
@@ -505,15 +517,11 @@ export class DefenseSimulation {
       hp: impact.hp, destroyed: impact.destroyed }, cell);
   }
 
-  private towerRange(tower: Building): number {
-    const extraRange = this.map.getBiome(tower.cell) === "highland" ? BIOME_PROTOTYPE.highlandTowerRangeBonus : 0;
-    return DEFENSE_CONFIG.towerRange + extraRange;
-  }
-
   private fireTower(tower: Building): void {
     if ((this.towerReadyAt.get(tower.cell) ?? 0) > this.timeMs) return;
+    const attributes = towerAttributes(this.map.buildingBalance, tower.level, this.map.getBiome(tower.cell));
     let selected: EnemyState | undefined;
-    let closest = this.towerRange(tower) ** 2;
+    let closest = attributes.range ** 2;
     for (const enemy of this.units.values()) {
       const position = enemyPosition(enemy);
       const distance = (position.x - tower.cell.col - 0.5) ** 2 + (position.y - tower.cell.row - 0.5) ** 2;
@@ -523,12 +531,13 @@ export class DefenseSimulation {
     }
     if (!selected) return;
 
-    this.towerReadyAt.set(tower.cell, this.timeMs + DEFENSE_CONFIG.towerIntervalMs);
-    selected.hp = Math.max(0, selected.hp - DEFENSE_CONFIG.towerDamage);
+    this.towerReadyAt.set(tower.cell, this.timeMs + attributes.intervalMs);
+    const damage = Math.min(selected.hp, attributes.damage);
+    selected.hp -= damage;
     this.counts.shots += 1;
     this.waveCombat.recordTowerHit(selected.id, this.timeMs);
     this.emitFor(selected, { type: "towerShot", enemyId: selected.id, towerId: tower.id,
-      from: tower.cell, to: enemyPosition(selected) }, tower.cell);
+      from: tower.cell, to: enemyPosition(selected), damage }, tower.cell);
     if (selected.hp === 0 && this.units.delete(selected.id)) {
       this.counts.towerKills += 1;
       this.waveCombat.resolve(selected.id, "towerKills", this.timeMs);

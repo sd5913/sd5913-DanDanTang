@@ -200,15 +200,19 @@ function assertCombatAccounting(state, compareTotals = false) {
   }
 }
 
+async function isolatePlayerForQueueTest(page, game) {
+  await game.openLineTo({ col: 19, row: 82 }, true);
+  await placePressureCard(page, game, 'wall', { col: 19, row: 83 });
+}
+
 export async function runPressureQueueRolloverSmoke(page, baseUrl) {
-  const game = await openCombatGame(page, baseUrl, 'baseline');
-  await game.walkTo({ col: 19, row: 84 }, true);
-  await game.walkTo({ col: 22, row: 84 }, true);
+  const game = await openCombatGame(page, baseUrl, 'baseline', 'test', playFixture(seed).layout);
+  await isolatePlayerForQueueTest(page, game);
   const blocked = await watchWave(page,
     (state) => state.phase === 'attacking' && state.unreachable > 0 && state.pending > 0
       && state.combat.some((wave) => wave.waveId === state.wave && wave.pending > 0
         && state.combat.some((cohort) => cohort.buildingDamage > 0 && cohort.waveId < wave.waveId)),
-    'After the sole tech facility is destroyed, the fixed entry should naturally hold a live enemy and waiting queue');
+    'With the player cut off and the facility destroyed, the entry must retain live enemies and the waiting queue');
   assert.ok(await page.locator('#rebuild-technology').isVisible());
   assert.equal(blocked.hp, 4);
   assertCombatAccounting(blocked, true);
@@ -277,13 +281,12 @@ export async function runPressureQueueRolloverSmoke(page, baseUrl) {
 }
 
 export async function runFirstWaveFacilitySmoke(page, baseUrl) {
-  const game = await openCombatGame(page, baseUrl, 'baseline');
+  const game = await openCombatGame(page, baseUrl, 'baseline', 'test', playFixture(seed).layout);
   const technology = ECONOMY_PROTOTYPE.technologyCell;
   await game.inspect(technology, '空地');
   await page.clock.runFor(32);
   assert.match(await page.locator('#expedition-building').textContent(), /科技设施.+1 HP$/);
-  await game.walkTo({ col: 19, row: 84 }, true);
-  await game.walkTo({ col: 22, row: 84 }, true);
+  await isolatePlayerForQueueTest(page, game);
   const hit = await watchWave(page, (state) => state.combat[0]?.buildingsDestroyed === 1,
     'The first wave must destroy the facility with a single contact');
   assert.ok(await page.locator('#rebuild-technology').isVisible());
@@ -567,7 +570,7 @@ async function defendOutcomeRoute(page, game) {
   const south = (col) => ({ col, row: 94 });
   const producer = { col: 20, row: 91 };
   const towers = [south(25), south(24)];
-  const walls = [south(26), south(23), south(22), { col: 21, row: 93 }];
+  const walls = [south(26), south(23), south(22)];
 
   await placePressureCard(page, game, 'economy', producer);
   await game.walkVia({ col: 21, row: 92 }, south(21), south(25));
@@ -581,7 +584,6 @@ async function defendOutcomeRoute(page, game) {
   await game.walkTo(south(21), true);
   await placePressureCard(page, game, 'wall', walls[2]);
   await game.walkTo({ col: 21, row: 92 }, true);
-  await placePressureCard(page, game, 'wall', walls[3]);
   await game.walkTo(GENERATED_SPAWN, true);
   await page.keyboard.press('Escape');
   return [producer, ...towers, ...walls, ECONOMY_PROTOTYPE.technologyCell];
@@ -638,7 +640,10 @@ export async function runPressureOutcomeSmoke(page, baseUrl, profile, speed, out
     await page.locator('#research-tool').click();
     assert.equal(await page.locator('#tool-level').textContent(), 'Lv.2');
     route = findDiggablePath(blockers);
-    await followRoute(page, game, route);
+    await followRoute(page, game, route, {
+      stopAt: { col: 19, row: 82 },
+      onStop: () => placePressureCard(page, game, 'wall', { col: 19, row: 83 }),
+    });
     assert.deepEqual(await game.position(), GENERATED_GOAL);
   }
 

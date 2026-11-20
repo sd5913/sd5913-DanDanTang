@@ -303,6 +303,21 @@ test("an enemy cannot pursue a player who is genuinely cut off after a building 
   assert.equal(simulation.counters.playerContacts, 0);
 });
 
+test("enemies with no building objective still need to spot an obscured player", () => {
+  const player = cell(7, 5);
+  const detour = [cell(5, 6), cell(6, 6), cell(7, 6)];
+  const map = makeMap({ corridor: [entry, player, ...detour] });
+  const { simulation, events } = runCombat(map);
+  simulation.spawn(1, 1);
+  simulation.step(1_000, player);
+
+  const [enemy] = simulation.enemies;
+  assert.deepEqual(enemy.cell, entry);
+  assert.ok(!events.some(({ target }) => target?.kind === "player"));
+  simulation.step(150, detour[0]);
+  assert.equal(simulation.counters.playerContacts, 1, "The unit still attacks on real contact once the player is exposed");
+});
+
 test("250 active play enemies reuse one measured route field for multiple owned structures", () => {
   const map = makeMap();
   for (const target of [cell(15, 6), cell(18, 7), cell(16, 17), cell(9, 24), cell(18, 26), cell(21, 27)]) {

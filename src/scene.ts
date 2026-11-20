@@ -45,7 +45,9 @@ export class GridScene extends Phaser.Scene {
     layout?: readonly string[], defenseOptions?: DefenseScenario, wide = false, biomes?: TerrainOptions["biomes"],
   ) {
     super("grid");
-    this.terrain = new TerrainMap(layout, { autoMerge: wide ? undefined : false, biomes });
+    this.terrain = new TerrainMap(layout, {
+      autoMerge: wide ? undefined : false, biomes, buildingBalance: defenseOptions?.buildingBalance,
+    });
     this.player = new Player(this.terrain.spawn);
     if (defenseOptions?.fogEnabled) this.fog = new ExplorationFog(this.terrain.columns, this.terrain.rows);
     this.mining = new MiningSession(this.terrain, MINING_CONFIG, () => this.defense?.toolLevel ?? 1);

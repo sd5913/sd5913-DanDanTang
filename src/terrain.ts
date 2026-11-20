@@ -1,3 +1,5 @@
+import { buildingMaxHp } from "./building-balance.ts";
+import type { BuildingBalanceId } from "./building-balance.ts";
 import { BUILDING_SYNTHESIS_CONFIG, BuildingStore } from "./buildings.ts";
 import type { Building, BuildingImpact, BuildingKind, WallImpact } from "./buildings.ts";
 import type { BiomeId } from "./expedition-biomes.ts";
@@ -86,6 +88,7 @@ type TerrainChunk = TerrainCell[][];
 export interface TerrainOptions {
   readonly autoMerge?: boolean;
   readonly biomes?: readonly (readonly BiomeId[])[];
+  readonly buildingBalance?: BuildingBalanceId;
 }
 
 function chunkRowFor(row: number): number {
@@ -96,6 +99,7 @@ export class TerrainMap implements TerrainReader {
   readonly columns: number;
   readonly rows: number;
   readonly spawn: GridPosition;
+  readonly buildingBalance: BuildingBalanceId;
 
   readonly #layout: readonly string[];
   readonly #initialChunks: readonly TerrainChunk[];
@@ -107,6 +111,7 @@ export class TerrainMap implements TerrainReader {
 
   constructor(layout: readonly string[] = TEST_MAP_LAYOUT, options: TerrainOptions = {}) {
     this.#layout = [...layout];
+    this.buildingBalance = options.buildingBalance ?? "control";
     this.#autoMerge = options.autoMerge ?? BUILDING_SYNTHESIS_CONFIG.autoMerge;
     this.rows = this.#layout.length;
     this.columns = this.#layout[0]?.length ?? 0;
@@ -117,7 +122,7 @@ export class TerrainMap implements TerrainReader {
       throw new RangeError("Biome metadata must match the terrain dimensions");
     }
     this.#biomes = options.biomes?.map((row) => [...row]);
-    this.#buildings = new BuildingStore(this.columns);
+    this.#buildings = new BuildingStore(this.columns, this.buildingBalance);
     const spawnRow = this.#layout.findIndex((row) => row.includes("S"));
     const spawnCol = this.#layout[spawnRow]?.indexOf("S") ?? -1;
     if (spawnRow < 0
@@ -203,7 +208,7 @@ export class TerrainMap implements TerrainReader {
     return this.#buildings.values();
   }
 
-  placeBuilding(kind: BuildingKind, position: GridPosition, hp = kind === "wall" ? 50 : 1): Building | undefined {
+  placeBuilding(kind: BuildingKind, position: GridPosition, hp = buildingMaxHp(kind, this.buildingBalance)): Building | undefined {
     if (!this.isInside(position) || this.cellRow(position.row)[position.col].terrain !== "empty") return undefined;
     const building = this.#buildings.place(kind, position, hp);
     if (!building) return undefined;

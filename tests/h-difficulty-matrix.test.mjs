@@ -24,8 +24,9 @@ test("H-E uses four distinctly measured maps and the same slate of input for eac
     if (strategy === "no-defense") {
       assert.ok(actions.every(({ type }) => ["move", "wait"].includes(type)));
     } else {
+      const walls = strategy === "basic" ? ["wall", "wall", "wall", "wall"] : ["wall"];
       assert.deepEqual(actions.filter(({ type }) => type === "place").map(({ kind }) => kind).sort(),
-        ["economy", "tower", "tower", "wall"]);
+        ["economy", "tower", "tower", ...walls]);
       assert.equal(actions.filter(({ type }) => type === "research").length, 1);
       assert.equal(actions.filter(({ type }) => type === "draw").length, 2);
     }

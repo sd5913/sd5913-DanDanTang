@@ -5,6 +5,10 @@ import { createServer, preview } from 'vite';
 import { MINING_CONFIG } from '../src/mining-config.ts';
 import { TerrainMap } from '../src/terrain.ts';
 import { runBuildDebugIsolationSmoke, runBuildRangeSmoke } from './browser-build-range.mjs';
+import {
+  runBoundarySeedOpeningSmoke, runBuildingBalanceSelectionSmoke, runBuildingEconomyUpgradeSmoke,
+  runBuildingTowerUpgradeSmoke, runBuildingWallUpgradeSmoke,
+} from './browser-building-balance.mjs';
 import { runCardFeedbackSmoke, runDestroyedTechFeedbackSmoke } from './browser-card-feedback.mjs';
 import {
   runChallengeLossSmoke, runChallengePitySmoke, runChallengeTechnologyRelocationSmoke, runChallengeTowerSmoke,
@@ -22,6 +26,7 @@ import {
   runFirstWaveFacilitySmoke, runPressureAlertsSmoke, runPressureEconomySmoke, runPressureFirstWaveSmoke, runPressureForecastSmoke,
   runPressureOutcomeSmoke, runPressurePlayerContactSmoke, runPressureProfileSelectionSmoke, runPressureQueueRolloverSmoke,
 } from './browser-pressure.mjs';
+import { runEnemyRetargetSmoke } from './browser-retarget.mjs';
 
 const host = '127.0.0.1';
 const root = fileURLToPath(new URL('..', import.meta.url));
@@ -48,6 +53,8 @@ try {
       await runWideMiningPreviewBrowserSmoke(browser, url, mode);
     } else if (process.argv.includes('--challenge')) {
       await runChallengeBrowserSmoke(browser, url, mode, true);
+    } else if (process.argv.includes('--building-balance')) {
+      await runBuildingBalanceBrowserSmoke(browser, url, mode);
     } else if (process.argv.includes('--pressure-outcomes')) {
       await runPressureOutcomesBrowserSmoke(browser, url, mode, true);
     } else if (process.argv.includes('--pressure-alerts')) {
@@ -94,6 +101,8 @@ async function runContactBrowserSmoke(browser, url, mode) {
   console.log(`Edge smoke (${mode}, enemy body contact): passed; ${JSON.stringify(contacts)}; no browser errors.`);
   const wave = await withSmokePage(browser, viewport, (page) => runFirstWaveFacilitySmoke(page, url));
   console.log(`Edge smoke (${mode}, first-wave facility contact): passed; ${JSON.stringify(wave)}; no browser errors.`);
+  const retarget = await withSmokePage(browser, viewport, (page) => runEnemyRetargetSmoke(page, url));
+  console.log(`Edge smoke (${mode}, enemy retarget): passed; ${JSON.stringify(retarget)}; no browser errors.`);
 }
 
 async function runChallengeBrowserSmoke(browser, url, mode, full) {
@@ -107,6 +116,26 @@ async function runChallengeBrowserSmoke(browser, url, mode, full) {
   for (const run of cases) {
     const result = await withSmokePage(browser, viewport, (page) => run(page, url));
     console.log(`Edge smoke (${mode}, challenge): passed; ${JSON.stringify(result)}; no browser errors.`);
+  }
+}
+
+async function runBuildingBalanceBrowserSmoke(browser, url, mode) {
+  const viewport = { width: 1280, height: 900 };
+  const selection = await withSmokePage(browser, viewport, (page) => runBuildingBalanceSelectionSmoke(page, url));
+  console.log(`Edge smoke (${mode}, building balance selection): passed; ${JSON.stringify(selection)}; no browser errors.`);
+  for (const build of [undefined, 'control', 'w35', 'w15']) {
+    const wall = await withSmokePage(browser, viewport, (page) => runChallengeWallSmoke(page, url, build));
+    console.log(`Edge smoke (${mode}, paid wall balance): passed; ${JSON.stringify(wall)}; no browser errors.`);
+  }
+  for (const run of [runBuildingWallUpgradeSmoke, runBuildingTowerUpgradeSmoke, runBuildingEconomyUpgradeSmoke]) {
+    const upgrade = await withSmokePage(browser, viewport, (page) => run(page, url));
+    console.log(`Edge smoke (${mode}, paid building upgrade): passed; ${JSON.stringify(upgrade)}; no browser errors.`);
+  }
+  const outcome = await withSmokePage(browser, viewport, (page) => runChallengeVictorySmoke(page, url, 'w25'));
+  console.log(`Edge smoke (${mode}, W25 challenge victory): passed; ${JSON.stringify(outcome)}; no browser errors.`);
+  for (const seed of [0, 0xffff_ffff]) {
+    const opening = await withSmokePage(browser, viewport, (page) => runBoundarySeedOpeningSmoke(page, url, seed));
+    console.log(`Edge smoke (${mode}, boundary seed opening): passed; ${JSON.stringify(opening)}; no browser errors.`);
   }
 }
 

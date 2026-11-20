@@ -4,6 +4,7 @@ import { ECONOMY_PROTOTYPE, ExpeditionEconomy } from "../src/expedition-economy.
 import { CHUNK_ROWS, TerrainMap } from "../src/terrain.ts";
 
 const technology = { col: 20, row: 20 };
+const replacementTechnology = { col: 19, row: 20 };
 const wallSite = { col: 3, row: 1 };
 const { drawCost } = ECONOMY_PROTOTYPE;
 const columns = 24;
@@ -37,9 +38,9 @@ function fixture(seed, difficulty = "challenge") {
     return card;
   }
 
-  function buyTechnology() {
+  function buyTechnology(site = technology) {
     mine(economy.technologyBuildCost / 0.5);
-    assert.ok(economy.buildTechnology(technology));
+    assert.ok(economy.buildTechnology(site));
   }
 
   function reset() {
@@ -68,7 +69,7 @@ test("Challenge can force either defense on the third paid draw and resumes the 
   }
 });
 
-test("insufficient funds or absent or destroyed technology cannot advance the guaranteed draw", () => {
+test("failed draws and a paid facility relocation do not advance the guaranteed draw", () => {
   const { map, economy, mine, buyTechnology, payAndDraw } = fixture(1091);
   const control = fixture(1091);
   const actual = [];
@@ -89,7 +90,9 @@ test("insufficient funds or absent or destroyed technology cannot advance the gu
   assert.equal(economy.totals.cardSpend, 6);
   assert.equal(economy.totals.cardsMade, 2);
   assert.equal(economy.rebuildTechnology(), undefined);
-  buyTechnology();
+  buyTechnology(replacementTechnology);
+  assert.deepEqual(economy.technologyCell, replacementTechnology);
+  assert.equal(map.getBuilding(technology), undefined);
   actual.push(economy.drawCard(), payAndDraw(), payAndDraw());
 
   assert.equal(actual[2], "tower");

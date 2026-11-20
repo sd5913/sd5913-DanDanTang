@@ -1,4 +1,5 @@
 import Phaser from "phaser";
+import { BUILDING_BALANCE_PROFILES, DEFAULT_CHALLENGE_BUILDING_BALANCE, readBuildingBalance } from "./building-balance.ts";
 import { DEFENSE_LAYOUT, DEFENSE_TARGET, ENEMY_ENTRY } from "./defense-map.ts";
 import { DENSE_LONG_MAP_LAYOUT } from "./dense-long-map.ts";
 import { generateExpeditionBiomes } from "./expedition-biomes.ts";
@@ -19,6 +20,7 @@ const params = new URLSearchParams(window.location.search);
 const defense = params.get("mode") === "defense";
 const play = params.get("mode") === "play";
 const difficulty = readDifficulty(params.get("difficulty"));
+const buildingBalance = difficulty === "challenge" ? readBuildingBalance(params.get("build")) : "control";
 const speed = params.get("speed");
 const fixture = params.get("map");
 const wide = play || (fixture !== "fix01" && (defense || (fixture !== "single" && fixture !== "regression")));
@@ -46,6 +48,7 @@ const defenseOptions = play && world
       fogEnabled: params.get("fog") !== "off",
       roundSpeed: speed === "wait-test" ? "wait-test" as const : speed === "test",
       difficulty,
+      buildingBalance,
       debugControls: params.get("debug") === "1",
     }
   : !defense ? undefined : wide
@@ -66,8 +69,23 @@ if (play) {
     const url = new URL(window.location.href);
     if (select.value === "baseline") url.searchParams.delete("difficulty");
     else url.searchParams.set("difficulty", select.value);
+    if (select.value !== "challenge") url.searchParams.delete("build");
     window.location.assign(url);
   });
+  if (difficulty === "challenge") {
+    const balanceSelect = document.querySelector<HTMLSelectElement>("#challenge-balance")!;
+    for (const [id, profile] of Object.entries(BUILDING_BALANCE_PROFILES)) {
+      const trial = id === DEFAULT_CHALLENGE_BUILDING_BALANCE ? " · 试玩候选" : id === "control" ? " · 原属性" : "";
+      balanceSelect.add(new Option(`${profile.label} · ${profile.wallHp} HP${trial}`, id));
+    }
+    balanceSelect.value = buildingBalance;
+    document.getElementById("challenge-balance-controls")!.hidden = false;
+    balanceSelect.addEventListener("change", () => {
+      const url = new URL(window.location.href);
+      url.searchParams.set("build", balanceSelect.value);
+      window.location.assign(url);
+    });
+  }
 }
 document.getElementById("map-size")!.textContent =
   `${phase} / ${layout[0].length} × ${layout.length}${worldDetails ? ` · ${worldDetails}` : ""}`;
