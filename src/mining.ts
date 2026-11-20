@@ -14,7 +14,8 @@ export interface MiningStrike {
 }
 
 interface ActiveMining {
-  readonly target: GridPosition;
+  // A cleared target leaves the hold active while the player aims at the next tile.
+  readonly target: GridPosition | null;
   lastUpdateMs: number;
 }
 
@@ -46,34 +47,48 @@ export class MiningSession {
     const result = this.map.applyDigDamage(from, target, this.tool.damage);
     if (result.effective) {
       this.nextAttackMs = nowMs + this.tool.attackIntervalMs;
-      if (!result.cleared) this.active = { target, lastUpdateMs: nowMs };
+      this.active = { target: result.cleared ? null : target, lastUpdateMs: nowMs };
     }
     return { target, result };
   }
 
-  update(from: GridPosition, nowMs: number): MiningStrike | undefined {
+  update(from: GridPosition, nowMs: number, aimedCell: GridPosition | null = null): MiningStrike | undefined {
     const active = this.active;
     if (!active) return;
 
     const elapsed = nowMs - active.lastUpdateMs;
-    if (!(elapsed >= 0 && elapsed <= MAX_UPDATE_GAP_MS) || this.map.getDigFailure(from, active.target)) {
+    if (!(elapsed >= 0 && elapsed <= MAX_UPDATE_GAP_MS)) {
       this.stop();
       return;
     }
     active.lastUpdateMs = nowMs;
 
+    const { target } = active;
+    if (!target) {
+      if (nowMs < this.nextAttackMs || !aimedCell || this.map.getDigFailure(from, aimedCell)) return;
+      return this.begin(from, aimedCell, nowMs);
+    }
+    if (this.map.getDigFailure(from, target)) {
+      this.stop();
+      return;
+    }
+
     let result: DigResult | undefined;
     // Keep the original cadence across short stalls and stop at the clearing strike.
     while (nowMs >= this.nextAttackMs) {
-      result = this.map.applyDigDamage(from, active.target, this.tool.damage);
-      if (result.effective) this.nextAttackMs += this.tool.attackIntervalMs;
-      if (!result.effective || result.cleared) {
+      result = this.map.applyDigDamage(from, target, this.tool.damage);
+      if (!result.effective) {
         this.stop();
+        break;
+      }
+      this.nextAttackMs += this.tool.attackIntervalMs;
+      if (result.cleared) {
+        this.active = { target: null, lastUpdateMs: nowMs };
         break;
       }
     }
 
-    if (result) return { target: active.target, result };
+    if (result) return { target, result };
   }
 
   stop(): void {

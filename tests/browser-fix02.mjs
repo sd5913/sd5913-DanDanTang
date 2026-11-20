@@ -175,13 +175,13 @@ export async function runFix02MapSmoke(page, url) {
     await game.inspect(locked, `HP ${dirtMaxHp - 1}/${dirtMaxHp}`);
     await game.inspect(alternate, '可挖地形', `HP ${dirtMaxHp}/${dirtMaxHp}`);
     await page.setViewportSize({ width: 1280, height: 1060 });
-    await page.clock.runFor(128);
+    await page.clock.runFor(Math.floor(attackIntervalMs / 2));
     const resized = await game.view();
     assert.ok(Math.abs(resized.height - beforeResize.height) > TILE_SIZE,
       `Resizing must change visible height, saw ${beforeResize.height} → ${resized.height}`);
     assert.ok(Math.abs(resized.top - beforeResize.top) > TILE_SIZE, 'Resizing at the bottom must also reposition the camera');
     await game.inspect(alternate, '可挖地形', `HP ${dirtMaxHp}/${dirtMaxHp}`);
-    await page.clock.runFor(192);
+    await page.clock.runFor(attackIntervalMs);
   } finally {
     await page.mouse.up({ button: 'left' });
   }

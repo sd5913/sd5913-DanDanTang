@@ -29,7 +29,7 @@ try {
     const mode = development ? 'dev' : 'production';
     const dugTiles = await withSmokePage(browser, { width: 1440, height: 1060 },
       (page) => runSingleMapSmoke(page, `${url}/?map=single`));
-    console.log(`Edge smoke (${mode}, single map): passed; real rapid clicks and cross-target cooldown, hold/release, target lock, interruption, and ready-tool reset verified; ${dugTiles} tiles mined on the route; no browser errors.`);
+    console.log(`Edge smoke (${mode}, single map): passed; real rapid clicks and cross-target cooldown, hold/release, target lock and chaining after clearing, interruption, and ready-tool reset verified; ${dugTiles} tiles mined on the route; no browser errors.`);
 
     await withSmokePage(browser, { width: 1040, height: 840 },
       (page) => runLongMapSmoke(page, `${url}/?map=regression`));
@@ -77,6 +77,7 @@ async function withSmokePage(browser, viewport, run) {
 
 async function runSingleMapSmoke(page, url) {
   const board = page.locator('#board canvas');
+  const { attackIntervalMs, dirtMaxHp } = MINING_CONFIG;
   const { col, row } = map.spawn;
   const firstDig = { col, row: row - 1 };
   const east = { col: col + 1, row };
@@ -170,7 +171,7 @@ async function runSingleMapSmoke(page, url) {
 
   async function assertHoverHpStays(cell, hp, message) {
     // A negative assertion must leave at least one scheduled attack time behind it.
-    await page.waitForTimeout(MINING_CONFIG.attackIntervalMs * 2);
+    await page.waitForTimeout(attackIntervalMs * 2);
     await assertHoverHp(cell, hp, message);
   }
 
@@ -238,16 +239,27 @@ async function runSingleMapSmoke(page, url) {
   await inspectCell(east, '空地');
   await inspectCell(firstDig, '可挖地形', 'HP 3/5');
 
-  await holdMouse(async () => {
-    await waitForText('#hover-cell', 'HP 2/5');
-    await movePlayer('KeyD', east);
-    await assertHoverHpStays(firstDig, 2, 'Moving out of range must stop mining');
-    await holdKey('KeyA', async () => {
-      await waitForText('#player-cell', coordinates(map.spawn));
+  await page.clock.pauseAt(await page.evaluate(() => Date.now() + 200));
+  try {
+    // Use the west wall to establish a known position before approaching the east edge.
+    await holdKey('KeyA', () => page.clock.runFor(300));
+    await holdKey('KeyD', () => page.clock.runFor(80));
+    assert.equal((await page.locator('#player-cell').textContent()).trim(), coordinates(map.spawn));
+    await holdMouse(async () => {
+      await assertHoverHp(firstDig, 2, 'A ready hold must strike once on press');
+      await holdKey('KeyD', () => page.clock.runFor(attackIntervalMs - 16));
+      assert.equal((await page.locator('#player-cell').textContent()).trim(), coordinates(east));
+      await page.clock.runFor(attackIntervalMs * 2);
+      await assertHoverHp(firstDig, 2, 'Moving out of range must stop mining');
       // Settle against the west wall so the player's right edge fits through the cleared tile later.
-      await assertHoverHpStays(firstDig, 2, 'Returning to range with the same press must not restart mining');
+      await holdKey('KeyA', () => page.clock.runFor(300));
+      assert.equal((await page.locator('#player-cell').textContent()).trim(), coordinates(map.spawn));
+      await page.clock.runFor(attackIntervalMs * 2);
+      await assertHoverHp(firstDig, 2, 'Returning to range with the same press must not restart mining');
     });
-  });
+  } finally {
+    await page.clock.resume();
+  }
 
   await holdMouse(async () => {
     await waitForText('#hover-cell', 'HP 1/5');
@@ -287,7 +299,7 @@ async function runSingleMapSmoke(page, url) {
       document.dispatchEvent(new Event('visibilitychange'));
     });
     try {
-      await page.waitForTimeout(MINING_CONFIG.attackIntervalMs * 3);
+      await page.waitForTimeout(Math.max(750, attackIntervalMs * 3));
     } finally {
       await page.evaluate(() => {
         delete document.hidden;
@@ -320,26 +332,27 @@ async function runSingleMapSmoke(page, url) {
   await moveToLockOrigin();
   const firstTargetPoint = await cellCenter(lockedTarget);
   const secondTargetPoint = await cellCenter(otherTarget);
-  // Use Edge's input events with explicit time advances around the 250 ms cooldown.
+  // Use Edge's input events with explicit time advances around the tool cooldown.
+  const rapidPressDelay = Math.floor(attackIntervalMs / 5);
   await page.clock.pauseAt(await page.evaluate(() => Date.now() + 200));
   try {
     await page.mouse.dblclick(firstTargetPoint.x, firstTargetPoint.y);
     await assertHoverHp(lockedTarget, 4, 'A rapid double click must only deal one hit');
 
-    await page.clock.runFor(50);
+    await page.clock.runFor(rapidPressDelay);
     await page.mouse.click(secondTargetPoint.x, secondTargetPoint.y);
     await assertHoverHp(otherTarget, 5, 'Switching to another legal tile must respect cooldown');
-    await page.clock.runFor(MINING_CONFIG.attackIntervalMs);
+    await page.clock.runFor(attackIntervalMs);
     await assertHoverHp(otherTarget, 5, 'Releasing during cooldown must not queue a later hit');
 
     await page.mouse.click(firstTargetPoint.x, firstTargetPoint.y);
     await assertHoverHp(lockedTarget, 3, 'A click after cooldown must hit immediately');
-    await page.clock.runFor(50);
+    await page.clock.runFor(rapidPressDelay);
     await page.mouse.move(secondTargetPoint.x, secondTargetPoint.y);
     await holdMouse(async () => {
       await assertHoverHp(otherTarget, 5, 'Holding a new target must wait for cooldown');
       await page.mouse.move(firstTargetPoint.x, firstTargetPoint.y);
-      await page.clock.runFor(MINING_CONFIG.attackIntervalMs);
+      await page.clock.runFor(attackIntervalMs);
       await assertHoverHp(lockedTarget, 3, 'A waiting hold must not switch to the new pointer position');
       await page.mouse.move(secondTargetPoint.x, secondTargetPoint.y);
       await assertHoverHp(otherTarget, 4, 'The original target must receive one hit when cooldown expires');
@@ -354,16 +367,37 @@ async function runSingleMapSmoke(page, url) {
     await page.clock.resume();
   }
 
-  await moveToLockOrigin();
-  await inspectCell(lockedTarget, '可挖地形', 'HP 5/5');
-  await holdMouse(async () => {
-    await waitForText('#hover-cell', 'HP 4/5');
-    await inspectCell(otherTarget, '可挖地形', 'HP 5/5');
-    await waitForText('#dig-result', '挖掘成功', coordinates(lockedTarget));
-    await assertHoverHpStays(otherTarget, 5, 'Moving the pointer must not retarget, even after the original tile clears');
-  });
-  await inspectCell(lockedTarget, '空地');
-  await resetMap();
+  const clearAt = (dirtMaxHp - 1) * attackIntervalMs;
+  for (const hoverBeforeClearing of [true, false]) {
+    await moveToLockOrigin();
+    await inspectCell(lockedTarget, '可挖地形', 'HP 5/5');
+    await page.clock.pauseAt(await page.evaluate(() => Date.now() + 200));
+    try {
+      await holdMouse(async () => {
+        await assertHoverHp(lockedTarget, 4, 'The starting target must take the first strike');
+        if (hoverBeforeClearing) await inspectCell(otherTarget, '可挖地形', 'HP 5/5');
+        await page.clock.runFor(clearAt - 1);
+        await inspectCell(lockedTarget, '可挖地形', 'HP 1/5');
+        if (hoverBeforeClearing) await inspectCell(otherTarget, '可挖地形', 'HP 5/5');
+
+        // Advance past the clearing frame, with time still left on the tool cooldown.
+        await page.clock.runFor(33);
+        const result = await page.locator('#dig-result').textContent();
+        assert.ok(result.includes('挖掘成功') && result.includes(coordinates(lockedTarget)), result);
+        if (!hoverBeforeClearing) {
+          await inspectCell(lockedTarget, '空地');
+          await page.clock.runFor(attackIntervalMs);
+        }
+        await inspectCell(otherTarget, '可挖地形', 'HP 5/5');
+        await page.clock.runFor(hoverBeforeClearing ? attackIntervalMs : 32);
+        await assertHoverHp(otherTarget, 4, 'The new target must take a hit without releasing the button');
+      });
+    } finally {
+      await page.clock.resume();
+    }
+    await inspectCell(lockedTarget, '空地');
+    await resetMap();
+  }
 
   const dugCells = [];
   let nextRow = row;

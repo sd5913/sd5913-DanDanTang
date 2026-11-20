@@ -99,7 +99,7 @@ export class GridScene extends Phaser.Scene {
       return;
     }
 
-    const strike = this.mining.update(this.player.cell, performance.now());
+    const strike = this.mining.update(this.player.cell, performance.now(), this.hovered);
     if (strike) this.showStrike(strike);
   }
 
