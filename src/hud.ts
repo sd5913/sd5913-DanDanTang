@@ -96,8 +96,12 @@ export class DebugHud {
     writeStatus(this.dig, `${message} · ${coordinates(target)}`);
   }
 
-  showGoal(reached: boolean): void {
+  showGoal(reached: boolean, expedition = false): void {
     this.goal.dataset.reached = String(reached);
-    writeStatus(this.goal, reached ? "P0-A 测试完成" : "挖通地形，抵达北端目标区");
+    if (expedition) {
+      writeStatus(this.goal, reached ? "已抵达北端目标区" : "升级至 Lv.2 工具，挖通地形并抵达北端目标区");
+    } else {
+      writeStatus(this.goal, reached ? "P0-A 测试完成" : "挖通地形，抵达北端目标区");
+    }
   }
 }

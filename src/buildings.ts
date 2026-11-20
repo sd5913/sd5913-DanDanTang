@@ -22,6 +22,14 @@ export interface WallImpact {
   readonly destroyed: boolean;
 }
 
+export interface BuildingImpact {
+  /** Immutable state of the building at the start of the impact. */
+  readonly building: Building;
+  readonly damage: number;
+  readonly hp: number;
+  readonly destroyed: boolean;
+}
+
 const DIRECTIONS: readonly GridPosition[] = [
   { col: 0, row: -1 },
   { col: 1, row: 0 },
@@ -126,19 +134,30 @@ export class BuildingStore {
   }
 
   impactWall(cell: GridPosition, wallId: string, damage: number): WallImpact | undefined {
-    const index = this.index(cell);
-    const wall = this.#occupied.get(index);
-    if (wall?.kind !== "wall" || wall.id !== wallId || !Number.isSafeInteger(damage) || damage <= 0) return undefined;
+    const wall = this.get(cell);
+    if (wall?.kind !== "wall" || wall.id !== wallId) return undefined;
+    const impact = this.applyDamage(wall, damage);
+    return impact && { wall, damage: impact.damage, hp: impact.hp, destroyed: impact.destroyed };
+  }
 
-    const applied = Math.min(wall.hp, damage);
-    const hp = wall.hp - applied;
+  damageBuilding(cell: GridPosition, buildingId: string, damage: number): BuildingImpact | undefined {
+    const building = this.get(cell);
+    if (!building || building.kind === "wall" || building.id !== buildingId) return undefined;
+    return this.applyDamage(building, damage);
+  }
+
+  private applyDamage(building: Building, damage: number): BuildingImpact | undefined {
+    if (!Number.isSafeInteger(damage) || damage <= 0) return undefined;
+    const index = this.index(building.cell);
+    const applied = Math.min(building.hp, damage);
+    const hp = building.hp - applied;
     const destroyed = hp === 0;
     if (destroyed) {
       this.#occupied.delete(index);
     } else {
-      this.#occupied.set(index, Object.freeze({ ...wall, hp }));
+      this.#occupied.set(index, Object.freeze({ ...building, hp }));
     }
-    return { wall, damage: applied, hp, destroyed };
+    return { building, damage: applied, hp, destroyed };
   }
 
   clear(): void {

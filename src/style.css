@@ -106,7 +106,14 @@ h1 {
 
 .goal h2 { color: var(--mint); }
 .goal p { color: #cee1dd; }
-.goal p[data-reached="true"] { color: var(--mint); font-weight: 700; }
+.goal p[data-reached="true"], #round-state[data-phase="won"] { color: var(--mint); font-weight: 700; }
+#round-state:is([data-phase="attacking"], [data-phase="lost"]) { color: #f0a39b; font-weight: 700; }
+#round-panel { order: -1; }
+#round-panel dl { display: grid; grid-template-columns: 1fr 1fr; gap: 0.25rem 0.5rem; margin-top: 0.375rem; }
+#round-panel dl > div { display: flex; justify-content: space-between; gap: 0.25rem; }
+#round-panel dt { color: var(--muted); }
+#round-panel dd { font-variant-numeric: tabular-nums; }
+#expedition-debug[hidden] { display: none; }
 
 .readout dl, .controls { display: grid; gap: 0.375rem; }
 .readout dl > div, .controls > div { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; }

@@ -2,6 +2,7 @@ import Phaser from "phaser";
 import { DefenseSimulation, enemyPosition, sameCell } from "./defense-simulation.ts";
 import type { DefenseEvent } from "./defense-simulation.ts";
 import { BUILDING_NAMES, ExpeditionControls } from "./expedition-controls.ts";
+import { ExpeditionRound } from "./expedition-round.ts";
 import type { BiomeId } from "./expedition-biomes.ts";
 import { cellCenter, PLAYER_HALF_SIZE, TILE_SIZE } from "./player.ts";
 import type { Player } from "./player.ts";
@@ -28,6 +29,8 @@ export interface DefenseScenario {
   readonly target: GridPosition;
   readonly worldSeed?: number;
   readonly fogEnabled?: boolean;
+  readonly fastRound?: boolean;
+  readonly debugControls?: boolean;
 }
 
 export class DefenseDebug {
@@ -47,6 +50,7 @@ export class DefenseDebug {
   private readonly playerTarget = field<HTMLInputElement>("test-player-target");
   private readonly keys?: Record<"B" | "T" | "X", Phaser.Input.Keyboard.Key>;
   private readonly expedition?: ExpeditionControls;
+  private readonly round?: ExpeditionRound;
   private shots: { readonly event: Shot; readonly expires: number }[] = [];
   private timeMs = 0;
 
@@ -54,12 +58,17 @@ export class DefenseDebug {
     this.map = map;
     this.player = player;
     this.scenario = scenario;
-    this.simulation = new DefenseSimulation(map, scenario.entry, scenario.target, (event) => this.onEvent(event));
+    this.simulation = new DefenseSimulation(
+      map, scenario.entry, scenario.target, (event) => this.onEvent(event), scenario.worldSeed !== undefined,
+    );
     this.graphics = scene.add.graphics().setDepth(1.5);
     this.labelLayer = scene.add.layer().setDepth(2.5);
     if (scenario.worldSeed !== undefined) {
-      this.expedition = new ExpeditionControls(scene, map, scenario.worldSeed, {
+      this.round = new ExpeditionRound(scenario.fastRound);
+      this.expedition = new ExpeditionControls(scene, map, scenario.worldSeed, this.round, {
+        debug: scenario.debugControls === true,
         spawnEnemy: () => this.spawnPrototypeEnemy(),
+        spawnStress: (count) => this.spawnStress(count),
         canRebuild: (cell) => this.canPlaceAt(cell),
       });
       return;
@@ -76,6 +85,7 @@ export class DefenseDebug {
   }
 
   update(deltaMs: number, cell: GridPosition | null): void {
+    if (this.roundEnded) return;
     if (this.keys && Phaser.Input.Keyboard.JustDown(this.keys.B)) this.place("wall", cell);
     if (this.keys && Phaser.Input.Keyboard.JustDown(this.keys.T)) this.place("tower", cell);
     if (this.keys && Phaser.Input.Keyboard.JustDown(this.keys.X) && cell) {
@@ -84,9 +94,19 @@ export class DefenseDebug {
     }
     const elapsed = Math.min(deltaMs, 50);
     this.timeMs += elapsed;
-    this.expedition?.economy.advance(elapsed);
-    this.simulation.step(elapsed, this.expedition || this.playerTarget.checked ? this.player.cell : undefined);
-    this.expedition?.refresh();
+    if (this.round && this.expedition) {
+      const { spawned, removed, pending } = this.simulation.spawnCounts;
+      const wave = this.round.update(elapsed, this.player.cell.row, spawned - removed, pending);
+      if (wave) {
+        this.simulation.requestSpawn(wave.count, wave.wallDamage, { hp: wave.enemyHp, contactDamage: wave.contactDamage });
+      }
+      this.expedition.economy.advance(elapsed);
+      this.simulation.step(elapsed, this.player.cell);
+      this.expedition.showRound(this.round);
+      this.expedition.refresh();
+    } else {
+      this.simulation.step(elapsed, this.playerTarget.checked ? this.player.cell : undefined);
+    }
   }
 
   render(view: Phaser.Geom.Rectangle, cell: GridPosition | null, isVisible: (cell: GridPosition) => boolean): void {
@@ -154,13 +174,26 @@ export class DefenseDebug {
     this.simulation.reset();
     this.timeMs = 0;
     this.shots = [];
-    this.expedition?.reset();
+    if (this.round && this.expedition) {
+      this.round.reset();
+      this.expedition.showRound(this.round);
+      this.expedition.reset();
+    }
     write(this.status, "等待布防或生成敌人");
   }
 
   placeSelectedCard(cell: GridPosition, visible: boolean): boolean {
     if (!this.expedition?.hasSelection) return false;
     this.expedition.placeSelected(cell, visible && this.canPlaceAt(cell));
+    return true;
+  }
+
+  get roundEnded(): boolean { return this.round?.phase === "won" || this.round?.phase === "lost"; }
+
+  reachGoal(): boolean {
+    if (!this.round) return true;
+    if (!this.round.reachGoal(this.toolLevel)) return false;
+    this.stopCombat();
     return true;
   }
 
@@ -175,6 +208,18 @@ export class DefenseDebug {
 
   private spawnPrototypeEnemy(): void {
     if (this.simulation.requestSpawn(1, 1)) this.expedition?.showFeedback("已请求 1 只从南端生成");
+  }
+
+  private spawnStress(count: number): void {
+    if (count === 50 || count === 100 || count === 250) this.simulation.spawn(count, 1);
+  }
+
+  private stopCombat(): void {
+    this.simulation.clearBattle();
+    this.shots = [];
+    if (!this.round || !this.expedition) return;
+    this.expedition.showRound(this.round);
+    this.expedition.refresh();
   }
 
   private place(kind: "wall" | "tower", cell: GridPosition | null): void {
@@ -215,6 +260,15 @@ export class DefenseDebug {
       this.expedition?.showFeedback(`城墙受袭 · -${event.damage} HP · ${result}`);
     }
     if (event.type === "towerKill") write(this.status, `测试塔击杀敌人 ${event.enemyId}`);
+    if (event.type === "buildingHit") {
+      const result = event.destroyed ? "已摧毁" : `剩 ${event.hp} HP`;
+      this.expedition?.showFeedback(`${BUILDING_NAMES[event.buildingKind]} ${coordinates(event.cell)} 受袭 · ${result}`);
+    }
+    if (event.type === "playerHit" && this.round) {
+      this.round.hitPlayer(event.damage);
+      this.expedition?.showFeedback(`玩家受袭 · -${event.damage} HP`);
+      if (this.roundEnded) this.stopCombat();
+    }
   }
 
   private wallLabel(index: number, x: number, y: number, hp: number): void {
@@ -231,7 +285,7 @@ export class DefenseDebug {
   private showStats(active: number, visible: number, northRow: number, unreachable: number): void {
     const { requested, spawned, pending, removed } = this.simulation.spawnCounts;
     const stats = { requested, spawned, pending, active, visible, removed, northRow, unreachable,
-      searches: this.simulation.searchCount, ...this.simulation.counters };
+      searches: this.simulation.searchCount, searchMs: this.simulation.searchTimeMs.toFixed(3), ...this.simulation.counters };
     for (const [key, value] of Object.entries(stats)) {
       const text = String(value);
       if (this.stats.dataset[key] !== text) this.stats.dataset[key] = text;

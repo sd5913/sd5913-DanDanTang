@@ -94,6 +94,11 @@ export class GridScene extends Phaser.Scene {
       return;
     }
 
+    if (this.defense?.roundEnded) {
+      this.stopMining();
+      return;
+    }
+
     const horizontal = Number(this.keys.D.isDown) - Number(this.keys.A.isDown);
     const vertical = Number(this.keys.S.isDown) - Number(this.keys.W.isDown);
     if (horizontal || vertical) {
@@ -102,7 +107,8 @@ export class GridScene extends Phaser.Scene {
     }
     this.defense?.update(delta, this.hovered);
 
-    if (!this.input.mousePointer.leftButtonDown() || !this.input.isOver || document.hidden || !document.hasFocus()) {
+    if (this.defense?.roundEnded || !this.input.mousePointer.leftButtonDown()
+      || !this.input.isOver || document.hidden || !document.hasFocus()) {
       this.stopMining();
       return;
     }
@@ -203,7 +209,8 @@ export class GridScene extends Phaser.Scene {
   }
 
   private beginMining(pointer: Phaser.Input.Pointer): void {
-    if (pointer.button !== 0 || !pointer.leftButtonDown() || document.hidden || !document.hasFocus() || this.game.isPaused) return;
+    if (this.defense?.roundEnded || pointer.button !== 0 || !pointer.leftButtonDown()
+      || document.hidden || !document.hasFocus() || this.game.isPaused) return;
     const target = this.pointerCell(pointer);
     if (!target) return;
     if (this.defense?.placeSelectedCard(target, this.isVisible(target))) {
@@ -252,9 +259,9 @@ export class GridScene extends Phaser.Scene {
     this.boardRenderer.movePlayer(this.player.position);
     this.hud.showPlayer(cell, this.terrain.worldToChunk(cell)?.chunk);
     this.defense?.showBiome(this.terrain.getBiome(cell) ?? "ordinary");
-    if (!this.reachedGoal && this.terrain.isGoal(cell)) {
+    if (!this.reachedGoal && this.terrain.isGoal(cell) && (this.defense?.reachGoal() ?? true)) {
       this.reachedGoal = true;
-      this.hud.showGoal(true);
+      this.hud.showGoal(true, this.defenseOptions?.worldSeed !== undefined);
     }
   }
 
@@ -275,6 +282,6 @@ export class GridScene extends Phaser.Scene {
     }
     this.updateHover(this.hovered);
     this.hud.showDig();
-    this.hud.showGoal(false);
+    this.hud.showGoal(false, this.defenseOptions?.worldSeed !== undefined);
   }
 }

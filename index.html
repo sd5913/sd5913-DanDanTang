@@ -48,6 +48,18 @@
             </dl>
           </section>
 
+          <section id="round-panel" aria-labelledby="round-title" hidden>
+            <h2 id="round-title">对局</h2>
+            <p id="round-state" aria-live="polite"></p>
+            <dl>
+              <div><dt>生命</dt><dd id="player-hp"></dd></div>
+              <div><dt>本轮剩余</dt><dd id="round-time"></dd></div>
+              <div><dt>波次</dt><dd id="round-wave"></dd></div>
+              <div><dt>进攻压力</dt><dd id="round-pressure"></dd></div>
+              <div><dt>深度阶段</dt><dd id="round-stage"></dd></div>
+            </dl>
+          </section>
+
           <section id="expedition-panel" aria-labelledby="expedition-title" hidden>
             <h2 id="expedition-title">经营与建造</h2>
             <p>经济 <output id="economy-balance">0</output></p>
@@ -62,7 +74,13 @@
               <button id="make-card" type="button">制造卡牌</button>
               <button id="research-tool" type="button">研发工具</button>
               <button id="rebuild-technology" type="button" hidden>重建科技设施</button>
+            </div>
+            <div id="expedition-debug" class="defense-controls" hidden>
               <button id="expedition-spawn" type="button">调试出兵</button>
+              <label>同时生成 <select id="expedition-stress-count">
+                <option>50</option><option>100</option><option>250</option>
+              </select></label>
+              <button id="expedition-stress" type="button">压力测试</button>
             </div>
             <p id="expedition-building">—</p>
             <p id="expedition-feedback" class="dig-result" aria-live="polite">请选择建筑卡，或按住左键挖掘</p>

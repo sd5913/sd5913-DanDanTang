@@ -1,5 +1,5 @@
 import { BUILDING_SYNTHESIS_CONFIG, BuildingStore } from "./buildings.ts";
-import type { Building, BuildingKind, WallImpact } from "./buildings.ts";
+import type { Building, BuildingImpact, BuildingKind, WallImpact } from "./buildings.ts";
 import type { BiomeId } from "./expedition-biomes.ts";
 import { TERRAIN_HP_BY_LEVEL } from "./mining-config.ts";
 import { TEST_MAP_LAYOUT } from "./test-map.ts";
@@ -229,6 +229,13 @@ export class TerrainMap implements TerrainReader {
   impactWall(position: GridPosition, wallId: string, damage: number): WallImpact | undefined {
     if (!this.isInside(position)) return undefined;
     const impact = this.#buildings.impactWall(position, wallId, damage);
+    if (impact?.destroyed) this.#revision += 1;
+    return impact;
+  }
+
+  damageBuilding(position: GridPosition, buildingId: string, damage: number): BuildingImpact | undefined {
+    if (!this.isInside(position)) return undefined;
+    const impact = this.#buildings.damageBuilding(position, buildingId, damage);
     if (impact?.destroyed) this.#revision += 1;
     return impact;
   }

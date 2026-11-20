@@ -1,8 +1,8 @@
 import Phaser from "phaser";
 import { DEFENSE_LAYOUT, DEFENSE_TARGET, ENEMY_ENTRY } from "./defense-map.ts";
 import { DENSE_LONG_MAP_LAYOUT } from "./dense-long-map.ts";
-import { BIOME_GENERATOR_VERSION, generateExpeditionBiomes } from "./expedition-biomes.ts";
-import { addExpeditionTiers } from "./expedition-terrain.ts";
+import { generateExpeditionBiomes } from "./expedition-biomes.ts";
+import { addExpeditionApproach, addExpeditionTiers, PLAY_GENERATOR_VERSION } from "./expedition-terrain.ts";
 import {
   GENERATED_ENEMY_ENTRY, GENERATED_GOAL, generateExpeditionWorld,
 } from "./generated-map.ts";
@@ -25,8 +25,8 @@ const landscape = play && world ? generateExpeditionBiomes(world.layout, world.e
 let layout: readonly string[];
 let phase: string;
 if (world) {
-  layout = landscape ? addExpeditionTiers(landscape.layout) : world.layout;
-  phase = "P0-B FIX02";
+  layout = landscape ? addExpeditionApproach(addExpeditionTiers(landscape.layout)) : world.layout;
+  phase = play ? "P0-G" : "P0-B FIX02";
 } else if (defense || fixture === "fix01") {
   layout = defense ? DEFENSE_LAYOUT : DENSE_LONG_MAP_LAYOUT;
   phase = "P0-B FIX01";
@@ -38,13 +38,21 @@ if (world) {
   phase = "P0-A.2";
 }
 const defenseOptions = play && world
-  ? { entry: GENERATED_ENEMY_ENTRY, target: GENERATED_GOAL, worldSeed: world.effectiveSeed, fogEnabled: params.get("fog") !== "off" }
+  ? {
+      entry: GENERATED_ENEMY_ENTRY, target: GENERATED_GOAL, worldSeed: world.effectiveSeed,
+      fogEnabled: params.get("fog") !== "off", fastRound: params.get("speed") === "test",
+      debugControls: params.get("debug") === "1",
+    }
   : !defense ? undefined : wide
     ? { entry: GENERATED_ENEMY_ENTRY, target: GENERATED_GOAL }
     : { entry: ENEMY_ENTRY, target: DEFENSE_TARGET };
 document.documentElement.classList.toggle("wide-map", wide);
 document.title = `${phase} · ${play ? "掘进对局" : defense ? "防御灰盒" : "格子地形与持续挖掘"}`;
-const worldDetails = world ? worldSeedLabel(landscape ? { ...world, generatorVersion: BIOME_GENERATOR_VERSION } : world) : "";
+const worldDetails = world ? worldSeedLabel(landscape ? { ...world, generatorVersion: PLAY_GENERATOR_VERSION } : world) : "";
+if (play) {
+  document.querySelector("h1")!.textContent = "掘进式生存塔防";
+  document.getElementById("goal-status")!.textContent = "升级至 Lv.2 工具，挖通地形并抵达北端目标区";
+}
 document.getElementById("map-size")!.textContent =
   `${phase} / ${layout[0].length} × ${layout.length}${worldDetails ? ` · ${worldDetails}` : ""}`;
 

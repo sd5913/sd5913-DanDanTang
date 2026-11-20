@@ -9,7 +9,8 @@ import { openWideGame } from './browser-fix02.mjs';
 const starterCards = { wall: 4, tower: 2, economy: 1 };
 const technologyCell = { col: 17, row: 90 };
 const economyCell = { col: 21, row: 90 };
-const towerCell = { col: 31, row: 94 };
+// Leave a few open tiles between the spawn and the tower so this measures a shot, not immediate contact.
+const towerCell = { col: 27, row: 94 };
 const formatCell = (cell) => `(${cell.col}, ${cell.row})`;
 
 export async function runExpeditionSmoke(page, url) {
@@ -142,12 +143,13 @@ export async function runExpeditionSmoke(page, url) {
   await game.openLineTo({ col: 28, row: 92 });
   await game.settleView();
   await build('tower', towerCell);
-  assert.match(await buildingAt(towerCell), /^防御塔 \(31, 94\)/);
+  assert.match(await buildingAt(towerCell), /^防御塔 \(27, 94\)/);
   assert.equal((await inventory()).tower, starterCards.tower - 1);
   await spawnEnemy.click();
   await page.clock.runFor(64);
   assert.equal(await page.locator('#defense-stats').getAttribute('data-tower-kills'), '1');
   assert.equal(await page.locator('#defense-stats').getAttribute('data-wall-impacts'), '0');
+  assert.equal(await page.locator('#defense-stats').getAttribute('data-building-contacts'), '0');
   assert.equal(await balance(), 8 + ECONOMY_PROTOTYPE.towerKillReward);
 }
 

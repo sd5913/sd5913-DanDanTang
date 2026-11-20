@@ -8,6 +8,7 @@ import { runDenseMapSmoke } from './browser-dense-map.mjs';
 import { runDefenseSmoke } from './browser-defense.mjs';
 import { runBiomeFogSmoke, runExpeditionSmoke, runResearchSmoke } from './browser-expedition.mjs';
 import { runFix02MapSmoke, runFix02DefenseSmoke, runFix02RoundSmoke, runSynthesisSmoke } from './browser-fix02.mjs';
+import { runLossSmoke, runVictorySmoke } from './browser-goal.mjs';
 import { runLongMapSmoke } from './browser-long-map.mjs';
 
 const host = '127.0.0.1';
@@ -60,7 +61,7 @@ try {
     console.log(`Edge smoke (${mode}, P0-C synthesis): passed; six-building bridge, oldest survivor, three released cells, two unchanged buildings, rendering, movement, and reset verified; no browser errors.`);
 
     await withSmokePage(browser, { width: 1280, height: 900 },
-      (page) => runExpeditionSmoke(page, `${url}/?mode=play&seed=12`));
+      (page) => runExpeditionSmoke(page, `${url}/?mode=play&seed=12&debug=1`));
     console.log(`Edge smoke (${mode}, P0-D expedition): passed; card placement and synthesis, separate controls, timed production, seeded manufacture, tower reward, and round reset verified; no browser errors.`);
 
     await withSmokePage(browser, { width: 1280, height: 900 },
@@ -70,6 +71,22 @@ try {
     await withSmokePage(browser, { width: 1280, height: 900 },
       (page) => runBiomeFogSmoke(page, `${url}/?mode=play&seed=12`));
     console.log(`Edge smoke (${mode}, P0-F biomes and fog): passed; three visibility states, same-seed reset, plain excavation, lake shore and water rejection verified; no browser errors.`);
+
+    await withSmokePage(browser, { width: 1280, height: 900 },
+      (page) => runLossSmoke(page, `${url}/?mode=play&seed=12&speed=test`));
+    console.log(`Edge smoke (${mode}, P0-G defeat): passed; real waves, contact HP loss, terminal stop, and reset verified; no browser errors.`);
+
+    const fastVictory = await withSmokePage(browser, { width: 1280, height: 900 },
+      (page) => runVictorySmoke(page, `${url}/?mode=play&seed=12&speed=test`));
+    console.log(`Edge smoke (${mode}, P0-G victory): passed; defenses, wave pressure, economy, research, actual mining route, north goal, and terminal stop verified; no browser errors.`);
+    console.log(JSON.stringify(fastVictory));
+
+    if (process.argv.includes('--normal-round')) {
+      const normalVictory = await withSmokePage(browser, { width: 1280, height: 900 },
+        (page) => runVictorySmoke(page, `${url}/?mode=play&seed=12`));
+      console.log(`Edge smoke (${mode}, P0-G normal timing): passed; normal preparation and wave timing, north goal, and terminal stop verified; no browser errors.`);
+      console.log(JSON.stringify(normalVictory));
+    }
   } finally {
     await browser.close();
   }

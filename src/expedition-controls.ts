@@ -4,6 +4,7 @@ import { BIOME_NAMES } from "./biome-effects.ts";
 import type { BiomeId } from "./expedition-biomes.ts";
 import { CARD_KINDS, ECONOMY_PROTOTYPE, ExpeditionEconomy, TECHNOLOGY_PROTOTYPE } from "./expedition-economy.ts";
 import type { CardKind } from "./expedition-economy.ts";
+import type { ExpeditionPhase, ExpeditionRound } from "./expedition-round.ts";
 import type { GridPosition, TerrainMap } from "./terrain.ts";
 
 export const BUILDING_NAMES: Record<BuildingKind, string> = {
@@ -20,14 +21,30 @@ function write(element: HTMLElement, text: string): void {
   if (element.textContent !== text) element.textContent = text;
 }
 
+const PHASE_NAMES: Record<ExpeditionPhase, string> = {
+  preparing: "准备中", attacking: "敌人进攻中", recovering: "休整中",
+  won: "获胜 · 已抵达北端目标", lost: "战败 · 玩家生命耗尽",
+};
+
 interface ExpeditionActions {
+  readonly debug: boolean;
   spawnEnemy(): void;
+  spawnStress(count: number): void;
   canRebuild(cell: GridPosition): boolean;
 }
 
 export class ExpeditionControls {
   readonly economy: ExpeditionEconomy;
   private selected?: CardKind;
+  private finished = false;
+  private readonly state = field("round-state");
+  private readonly time = field("round-time");
+  private readonly playerHp = field("player-hp");
+  private readonly wave = field("round-wave");
+  private readonly pressure = field("round-pressure");
+  private readonly stage = field("round-stage");
+  private readonly spawn = field<HTMLButtonElement>("expedition-spawn");
+  private readonly stress = field<HTMLButtonElement>("expedition-stress");
   private readonly cards = new Map(CARD_KINDS.map((kind) => [kind, field<HTMLButtonElement>(`card-${kind}`)]));
   private readonly balance = field("economy-balance");
   private readonly makeCard = field<HTMLButtonElement>("make-card");
@@ -38,12 +55,18 @@ export class ExpeditionControls {
   private readonly building = field("expedition-building");
   private readonly biome = field("expedition-biome");
 
-  constructor(scene: Phaser.Scene, map: TerrainMap, seed: number, actions: ExpeditionActions) {
+  constructor(
+    scene: Phaser.Scene, map: TerrainMap, seed: number, round: ExpeditionRound, actions: ExpeditionActions,
+  ) {
     this.economy = new ExpeditionEconomy(map, seed);
     const events = new AbortController();
     const options = { signal: events.signal };
     const panel = field("expedition-panel");
+    const roundPanel = field("round-panel");
     panel.hidden = false;
+    roundPanel.hidden = false;
+    field("expedition-debug").hidden = !actions.debug;
+    this.showRound(round);
     this.makeCard.textContent = `制造卡牌（${ECONOMY_PROTOTYPE.drawCost} 经济）`;
     this.research.textContent = `研发 Lv.2 工具（${TECHNOLOGY_PROTOTYPE.researchCost} 经济）`;
     this.makeCard.addEventListener("click", () => {
@@ -63,7 +86,11 @@ export class ExpeditionControls {
       }
       this.refresh();
     }, options);
-    field("expedition-spawn").addEventListener("click", actions.spawnEnemy, options);
+    if (actions.debug) {
+      const stressCount = field<HTMLSelectElement>("expedition-stress-count");
+      this.spawn.addEventListener("click", actions.spawnEnemy, options);
+      this.stress.addEventListener("click", () => actions.spawnStress(Number(stressCount.value)), options);
+    }
     for (const [card, button] of this.cards) {
       button.addEventListener("click", () => {
         this.selected = this.selected === card ? undefined : card;
@@ -80,6 +107,7 @@ export class ExpeditionControls {
     scene.events.once("shutdown", () => {
       events.abort();
       panel.hidden = true;
+      roundPanel.hidden = true;
     });
     this.refresh();
   }
@@ -112,6 +140,19 @@ export class ExpeditionControls {
     write(this.status, text);
   }
 
+  showRound(round: ExpeditionRound): void {
+    const { phase, playerHp, wave, pressure, stage, remainingMs } = round;
+    this.finished = phase === "won" || phase === "lost";
+    if (this.finished) this.selected = undefined;
+    if (this.state.dataset.phase !== phase) this.state.dataset.phase = phase;
+    write(this.state, PHASE_NAMES[phase]);
+    write(this.playerHp, String(playerHp));
+    write(this.wave, String(wave));
+    write(this.pressure, String(pressure));
+    write(this.stage, String(stage + 1));
+    write(this.time, this.finished ? "—" : `${Math.ceil(remainingMs / 1000)} 秒`);
+  }
+
   refresh(): void {
     write(this.balance, String(this.economy.balance));
     const cards = this.economy.cards;
@@ -119,19 +160,23 @@ export class ExpeditionControls {
       const count = String(cards[kind]);
       if (button.dataset.count !== count) {
         button.dataset.count = count;
-        button.disabled = cards[kind] === 0;
         write(button, `${BUILDING_NAMES[kind]} ${count}`);
       }
+      const disabled = this.finished || cards[kind] === 0;
+      if (button.disabled !== disabled) button.disabled = disabled;
       const pressed = String(this.selected === kind);
       if (button.getAttribute("aria-pressed") !== pressed) button.setAttribute("aria-pressed", pressed);
     }
-    const canDraw = this.economy.hasTechnology && this.economy.balance >= ECONOMY_PROTOTYPE.drawCost;
+    const canDraw = !this.finished && this.economy.hasTechnology && this.economy.balance >= ECONOMY_PROTOTYPE.drawCost;
     if (this.makeCard.disabled === canDraw) this.makeCard.disabled = !canDraw;
     const { toolLevel, hasTechnology, balance } = this.economy;
     write(this.tool, `Lv.${toolLevel}`);
-    const canResearch = toolLevel < 2 && hasTechnology && balance >= TECHNOLOGY_PROTOTYPE.researchCost;
+    const canResearch = !this.finished && toolLevel < 2 && hasTechnology && balance >= TECHNOLOGY_PROTOTYPE.researchCost;
     if (this.research.disabled === canResearch) this.research.disabled = !canResearch;
     if (this.rebuild.hidden !== hasTechnology) this.rebuild.hidden = hasTechnology;
+    if (this.rebuild.disabled !== this.finished) this.rebuild.disabled = this.finished;
+    if (this.spawn.disabled !== this.finished) this.spawn.disabled = this.finished;
+    if (this.stress.disabled !== this.finished) this.stress.disabled = this.finished;
   }
 
   reset(): void {
