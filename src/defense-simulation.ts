@@ -2,7 +2,10 @@ import { EnemyNavigation } from "./enemy-navigation.ts";
 import type { NavigationAction } from "./enemy-navigation.ts";
 import { BIOME_PROTOTYPE } from "./biome-effects.ts";
 import type { Building, BuildingKind } from "./buildings.ts";
+import type { WaveOrder } from "./expedition-round.ts";
 import type { GridPosition, TerrainMap } from "./terrain.ts";
+import { WaveCombatMetrics } from "./wave-combat-metrics.ts";
+import type { AttackEndReason, TowerExposureAnchor, WaveCombatSnapshot } from "./wave-combat-metrics.ts";
 
 export const DEFENSE_CONFIG = {
   enemyHp: 2,
@@ -29,6 +32,7 @@ interface EnemyMove {
 export interface EnemyState {
   readonly id: number;
   readonly spawnedAtMs: number;
+  readonly waveId?: number;
   cell: GridPosition;
   hp: number;
   readonly wallDamage: number;
@@ -54,6 +58,7 @@ interface SpawnRequest {
   remaining: number;
   readonly wallDamage: number;
   readonly profile: EnemyProfile;
+  readonly waveId?: number;
 }
 
 export type DefenseEvent =
@@ -65,6 +70,14 @@ export type DefenseEvent =
   | { type: "wallImpact"; enemyId: number; wallId: string; damage: number; hp: number; destroyed: boolean }
   | { type: "towerShot"; enemyId: number; towerId: string; from: GridPosition; to: Position }
   | { type: "towerKill"; enemyId: number; towerId: string };
+
+export interface DefenseEventMetadata {
+  readonly waveId?: number;
+  readonly timeMs: number;
+  readonly cell?: GridPosition;
+}
+
+type DefenseEmitter = (event: DefenseEvent, metadata: DefenseEventMetadata) => void;
 
 function newCounters() {
   return { wallImpacts: 0, wallsDestroyed: 0, towerKills: 0, shots: 0, playerContacts: 0, buildingContacts: 0 };
@@ -91,8 +104,9 @@ export class DefenseSimulation {
   private readonly map: TerrainMap;
   private readonly entry: GridPosition;
   private readonly buildingTarget: Target;
-  private readonly emit: (event: DefenseEvent) => void;
+  private readonly emit: DefenseEmitter;
   private readonly expeditionCombat: boolean;
+  private readonly waveCombat = new WaveCombatMetrics();
   private readonly units = new Map<number, EnemyState>();
   private readonly spawnQueue: SpawnRequest[] = [];
   private towerReadyAt = new WeakMap<GridPosition, number>();
@@ -106,8 +120,11 @@ export class DefenseSimulation {
   private cancelledSpawns = 0;
   private buildingRevision = -1;
   private attackableBuildings: Building[] = [];
+  private defenseAnchorsRevision = -1;
+  private threatBuildings: GridPosition[] = [];
+  private exposureTowers: TowerExposureAnchor[] = [];
 
-  constructor(map: TerrainMap, entry: GridPosition, target: GridPosition, emit: (event: DefenseEvent) => void = () => {},
+  constructor(map: TerrainMap, entry: GridPosition, target: GridPosition, emit: DefenseEmitter = () => {},
     expeditionCombat = false) {
     this.map = map;
     this.entry = entry;
@@ -121,6 +138,19 @@ export class DefenseSimulation {
   get counters(): Readonly<ReturnType<typeof newCounters>> { return this.counts; }
   get searchCount(): number { return this.navigation.searchCount; }
   get searchTimeMs(): number { return this.navigation.searchTimeMs; }
+  get elapsedMs(): number { return this.timeMs; }
+  get waveMetrics(): readonly WaveCombatSnapshot[] { return this.waveCombat.snapshots(); }
+
+  getWaveMetrics(waveId: number): WaveCombatSnapshot | undefined { return this.waveCombat.snapshot(waveId); }
+
+  finishAttackPhase(waveId: number, reason?: AttackEndReason): void {
+    this.waveCombat.finishAttackPhase(waveId, this.timeMs, reason);
+  }
+
+  recordPlayerDamage(waveId: number | undefined, actualDamage: number, timeMs = this.timeMs): void {
+    if (waveId !== undefined) this.waveCombat.recordPlayerDamage(waveId, actualDamage, timeMs);
+  }
+
   get spawnCounts(): { readonly requested: number; readonly spawned: number; readonly pending: number; readonly removed: number } {
     return {
       requested: this.requestedSpawns,
@@ -146,8 +176,19 @@ export class DefenseSimulation {
 
   requestSpawn(count: number, wallDamage: number, profile: EnemyProfile = DEFAULT_ENEMY_PROFILE): number {
     if (!validSpawnRequest(count, wallDamage, profile)) return 0;
+    return this.enqueue(count, wallDamage, profile);
+  }
+
+  requestWave(waveId: number, order: WaveOrder): number {
+    const { count, wallDamage, enemyHp: hp, contactDamage } = order;
+    const profile = { hp, contactDamage };
+    if (!validSpawnRequest(count, wallDamage, profile) || !this.waveCombat.start(waveId, count, this.timeMs)) return 0;
+    return this.enqueue(count, wallDamage, profile, waveId);
+  }
+
+  private enqueue(count: number, wallDamage: number, profile: EnemyProfile, waveId?: number): number {
     this.requestedSpawns += count;
-    this.spawnQueue.push({ remaining: count, wallDamage, profile: { ...profile } });
+    this.spawnQueue.push({ remaining: count, wallDamage, profile: { ...profile }, waveId });
     this.releaseSpawn();
     return count;
   }
@@ -157,6 +198,7 @@ export class DefenseSimulation {
     this.cancelledSpawns += this.spawnCounts.pending;
     this.spawnQueue.length = 0;
     this.units.clear();
+    this.waveCombat.clearBattle(this.timeMs);
   }
 
   reset(): void {
@@ -172,6 +214,10 @@ export class DefenseSimulation {
     this.cancelledSpawns = 0;
     this.buildingRevision = -1;
     this.attackableBuildings = [];
+    this.defenseAnchorsRevision = -1;
+    this.threatBuildings = [];
+    this.exposureTowers = [];
+    this.waveCombat.reset();
   }
 
   step(deltaMs: number, player?: GridPosition): void {
@@ -181,23 +227,31 @@ export class DefenseSimulation {
     for (const building of this.map.getBuildings()) {
       if (building.kind === "tower") this.fireTower(building);
     }
-    this.releaseSpawn();
+    this.releaseSpawn(player);
   }
 
-  private addEnemy(wallDamage: number, profile: EnemyProfile): void {
+  private addEnemy(wallDamage: number, profile: EnemyProfile, waveId?: number, player?: GridPosition): void {
     const id = this.nextEnemyId++;
-    this.units.set(id, {
+    const enemy: EnemyState = {
       id, spawnedAtMs: this.timeMs, cell: this.entry, hp: profile.hp, wallDamage, contactDamage: profile.contactDamage,
       unreachable: false, contacted: false,
-    });
+      ...(waveId === undefined ? {} : { waveId }),
+    };
+    this.units.set(id, enemy);
     this.spawned += 1;
+    if (waveId !== undefined) {
+      this.waveCombat.spawn(waveId, id, this.timeMs);
+      const point = enemyPosition(enemy);
+      this.refreshDefenseAnchors();
+      this.samplePosition(enemy, point, this.timeMs, 0, player);
+    }
   }
 
-  private releaseSpawn(): void {
+  private releaseSpawn(player?: GridPosition): void {
     const request = this.spawnQueue[0];
     if (!request || this.timeMs < this.nextSpawnAtMs || !this.map.isWalkable(this.entry) || this.occupies(this.entry)) return;
 
-    this.addEnemy(request.wallDamage, request.profile);
+    this.addEnemy(request.wallDamage, request.profile, request.waveId, player);
     request.remaining -= 1;
     if (request.remaining === 0) this.spawnQueue.shift();
     // Start the next interval at the actual release time so a blocked entry cannot cause a burst.
@@ -206,17 +260,22 @@ export class DefenseSimulation {
 
   private advanceEnemy(enemy: EnemyState, deltaMs: number, player?: GridPosition): void {
     let budget = deltaMs;
+    if (this.needsPositionSample(enemy)) this.samplePosition(enemy, enemyPosition(enemy), this.timeMs - budget, 0, player);
     while (budget > 0) {
       if (enemy.move && !this.map.isWalkable(enemy.move.to)) enemy.move = undefined;
       if (enemy.move) {
         const left = DEFENSE_CONFIG.travelMs - enemy.move.elapsedMs;
+        const previous = this.needsPositionSample(enemy) ? enemyPosition(enemy) : undefined;
+        const start = this.timeMs - budget;
         if (budget < left) {
           enemy.move.elapsedMs += budget;
+          if (previous) this.samplePosition(enemy, previous, start, budget, player);
           return;
         }
         enemy.cell = enemy.move.to;
         enemy.move = undefined;
         budget -= left;
+        if (previous) this.samplePosition(enemy, previous, start, left, player);
       }
 
       const { target, action } = this.chooseAction(enemy.cell, player);
@@ -224,7 +283,7 @@ export class DefenseSimulation {
       if (enemy.targetKey !== key) {
         enemy.targetKey = key;
         enemy.contacted = false;
-        this.emit({ type: "targetSelected", enemyId: enemy.id, target });
+        this.emitFor(enemy, { type: "targetSelected", enemyId: enemy.id, target }, target.cell);
         if (!this.units.has(enemy.id)) return;
       }
 
@@ -237,6 +296,32 @@ export class DefenseSimulation {
       if (action.kind === "arrived" && !enemy.contacted) this.contact(enemy, target);
       return;
     }
+  }
+
+  private needsPositionSample(enemy: EnemyState): boolean {
+    if (enemy.waveId === undefined) return false;
+    this.refreshDefenseAnchors();
+    return this.waveCombat.needsPositionSample(enemy.id, this.exposureTowers.length > 0);
+  }
+
+  private refreshDefenseAnchors(): void {
+    if (this.defenseAnchorsRevision === this.map.revision) return;
+    this.threatBuildings = [];
+    this.exposureTowers = [];
+    for (const building of this.map.getBuildings()) {
+      this.threatBuildings.push(building.cell);
+      if (building.kind === "tower") this.exposureTowers.push({ cell: building.cell, radius: this.towerRange(building) });
+    }
+    this.defenseAnchorsRevision = this.map.revision;
+  }
+
+  private samplePosition(enemy: EnemyState, start: Position, timeMs: number, durationMs: number, player?: GridPosition): void {
+    this.waveCombat.samplePosition(enemy.id, start, durationMs === 0 ? start : enemyPosition(enemy),
+      timeMs, durationMs, player, this.threatBuildings, this.exposureTowers);
+  }
+
+  private emitFor(enemy: EnemyState, event: DefenseEvent, cell?: GridPosition): void {
+    this.emit(event, { waveId: enemy.waveId, timeMs: this.timeMs, cell });
   }
 
   private chooseAction(from: GridPosition, player?: GridPosition): { target: Target; action: NavigationAction } {
@@ -313,7 +398,8 @@ export class DefenseSimulation {
     if (this.expeditionCombat && target.kind === "player") {
       this.units.delete(enemy.id);
       this.counts.playerContacts += 1;
-      this.emit({ type: "playerHit", enemyId: enemy.id, damage: enemy.contactDamage });
+      this.waveCombat.resolve(enemy.id, "playerContacts", this.timeMs);
+      this.emitFor(enemy, { type: "playerHit", enemyId: enemy.id, damage: enemy.contactDamage }, target.cell);
       return;
     }
     if (this.expeditionCombat && target.buildingId) {
@@ -321,9 +407,10 @@ export class DefenseSimulation {
       if (!impact) return;
       this.units.delete(enemy.id);
       this.counts.buildingContacts += 1;
-      this.emit({ type: "buildingHit", enemyId: enemy.id, buildingId: impact.building.id,
+      this.waveCombat.resolve(enemy.id, "buildingContacts", this.timeMs, impact.damage, impact.destroyed);
+      this.emitFor(enemy, { type: "buildingHit", enemyId: enemy.id, buildingId: impact.building.id,
         buildingKind: impact.building.kind, cell: impact.building.cell, damage: impact.damage,
-        hp: impact.hp, destroyed: impact.destroyed });
+        hp: impact.hp, destroyed: impact.destroyed }, impact.building.cell);
       return;
     }
 
@@ -331,7 +418,7 @@ export class DefenseSimulation {
     const type = target.kind === "player" ? "playerContact" : "buildingContact";
     if (type === "playerContact") this.counts.playerContacts += 1;
     else this.counts.buildingContacts += 1;
-    this.emit({ type, enemyId: enemy.id, target: target.cell });
+    this.emitFor(enemy, { type, enemyId: enemy.id, target: target.cell }, target.cell);
   }
 
   private impactWall(enemy: EnemyState, cell: GridPosition, wallId: string): void {
@@ -340,14 +427,20 @@ export class DefenseSimulation {
     this.units.delete(enemy.id);
     this.counts.wallImpacts += 1;
     if (impact.destroyed) this.counts.wallsDestroyed += 1;
-    this.emit({ type: "wallImpact", enemyId: enemy.id, wallId, damage: impact.damage, hp: impact.hp, destroyed: impact.destroyed });
+    this.waveCombat.resolve(enemy.id, "wallImpacts", this.timeMs, impact.damage, impact.destroyed);
+    this.emitFor(enemy, { type: "wallImpact", enemyId: enemy.id, wallId, damage: impact.damage,
+      hp: impact.hp, destroyed: impact.destroyed }, cell);
+  }
+
+  private towerRange(tower: Building): number {
+    const extraRange = this.map.getBiome(tower.cell) === "highland" ? BIOME_PROTOTYPE.highlandTowerRangeBonus : 0;
+    return DEFENSE_CONFIG.towerRange + extraRange;
   }
 
   private fireTower(tower: Building): void {
     if ((this.towerReadyAt.get(tower.cell) ?? 0) > this.timeMs) return;
     let selected: EnemyState | undefined;
-    const extraRange = this.map.getBiome(tower.cell) === "highland" ? BIOME_PROTOTYPE.highlandTowerRangeBonus : 0;
-    let closest = (DEFENSE_CONFIG.towerRange + extraRange) ** 2;
+    let closest = this.towerRange(tower) ** 2;
     for (const enemy of this.units.values()) {
       const position = enemyPosition(enemy);
       const distance = (position.x - tower.cell.col - 0.5) ** 2 + (position.y - tower.cell.row - 0.5) ** 2;
@@ -360,10 +453,13 @@ export class DefenseSimulation {
     this.towerReadyAt.set(tower.cell, this.timeMs + DEFENSE_CONFIG.towerIntervalMs);
     selected.hp = Math.max(0, selected.hp - DEFENSE_CONFIG.towerDamage);
     this.counts.shots += 1;
-    this.emit({ type: "towerShot", enemyId: selected.id, towerId: tower.id, from: tower.cell, to: enemyPosition(selected) });
+    this.waveCombat.recordTowerHit(selected.id, this.timeMs);
+    this.emitFor(selected, { type: "towerShot", enemyId: selected.id, towerId: tower.id,
+      from: tower.cell, to: enemyPosition(selected) }, tower.cell);
     if (selected.hp === 0 && this.units.delete(selected.id)) {
       this.counts.towerKills += 1;
-      this.emit({ type: "towerKill", enemyId: selected.id, towerId: tower.id });
+      this.waveCombat.resolve(selected.id, "towerKills", this.timeMs);
+      this.emitFor(selected, { type: "towerKill", enemyId: selected.id, towerId: tower.id }, tower.cell);
     }
   }
 }

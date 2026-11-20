@@ -1,29 +1,19 @@
-export type ExpeditionPhase = "preparing" | "attacking" | "recovering" | "won" | "lost";
-type ExpeditionStage = 0 | 1 | 2;
+import { DIFFICULTY_PROFILES, PROTOTYPE_ONLY, wavePopulation } from "./expedition-difficulty.ts";
+import type { DifficultyId, EnemyStrength, ExpeditionStage } from "./expedition-difficulty.ts";
 
-export interface WaveOrder {
+export { PROTOTYPE_ONLY } from "./expedition-difficulty.ts";
+
+export type ExpeditionPhase = "preparing" | "attacking" | "recovering" | "won" | "lost";
+export type RoundSpeed = boolean | "wait-test";
+
+export interface WaveOrder extends EnemyStrength {
   readonly count: number;
-  readonly wallDamage: number;
-  readonly enemyHp: number;
-  readonly contactDamage: number;
 }
 
-export const PROTOTYPE_ONLY = Object.freeze({
-  playerHp: 4,
-  baseWaveCount: 3,
-  maxWaveCount: 32,
-  normal: Object.freeze({ preparingMs: 120_000, recoveringMs: 60_000, attackTimeoutMs: 45_000, pressureStepMs: 45_000 }),
-  fast: Object.freeze({ preparingMs: 2_500, recoveringMs: 2_500, attackTimeoutMs: 4_500, pressureStepMs: 8_000 }),
-  profiles: Object.freeze([
-    Object.freeze({ enemyHp: 2, wallDamage: 1, contactDamage: 1 }),
-    Object.freeze({ enemyHp: 3, wallDamage: 2, contactDamage: 1 }),
-    Object.freeze({ enemyHp: 4, wallDamage: 3, contactDamage: 2 }),
-  ] as const),
-});
-
-type Timing = (typeof PROTOTYPE_ONLY)["normal" | "fast"];
+type Timing = (typeof DIFFICULTY_PROFILES)[DifficultyId]["normal" | "fast"];
 
 export class ExpeditionRound {
+  readonly difficulty: DifficultyId;
   readonly #timing: Timing;
   #phase: ExpeditionPhase = "preparing";
   #wave = 0;
@@ -33,8 +23,12 @@ export class ExpeditionRound {
   #playerHp: number = PROTOTYPE_ONLY.playerHp;
   #stage: ExpeditionStage = 0;
 
-  constructor(fast = false) {
-    this.#timing = fast ? PROTOTYPE_ONLY.fast : PROTOTYPE_ONLY.normal;
+  constructor(speed: RoundSpeed = false, difficulty: DifficultyId = "baseline") {
+    this.difficulty = difficulty;
+    const profile = DIFFICULTY_PROFILES[difficulty];
+    this.#timing = speed === "wait-test" ? {
+      ...profile.normal, preparingMs: profile.fast.preparingMs, recoveringMs: profile.fast.recoveringMs,
+    } : speed ? profile.fast : profile.normal;
     this.reset();
   }
 
@@ -44,6 +38,13 @@ export class ExpeditionRound {
   get remainingMs(): number { return this.#remainingMs; }
   get playerHp(): number { return this.#playerHp; }
   get stage(): ExpeditionStage { return this.#stage; }
+  get strength(): EnemyStrength { return DIFFICULTY_PROFILES[this.difficulty].stages[this.#stage]; }
+
+  get upcoming(): WaveOrder | undefined {
+    if (this.#phase !== "preparing" && this.#phase !== "recovering") return undefined;
+    const waitingPressure = Math.floor((this.#pressureElapsedMs + this.#remainingMs) / this.#timing.pressureStepMs);
+    return this.order(this.#wave + 1, this.#pressure + waitingPressure);
+  }
 
   update(deltaMs: number, playerRow: number, active: number, pending: number): WaveOrder | undefined {
     if (this.finished() || !Number.isFinite(deltaMs) || deltaMs <= 0) return undefined;
@@ -63,9 +64,13 @@ export class ExpeditionRound {
     this.#phase = "attacking";
     this.#wave += 1;
     this.#remainingMs = this.#timing.attackTimeoutMs;
+    return this.order(this.#wave, this.#pressure);
+  }
+
+  private order(wave: number, pressure: number): WaveOrder {
     return {
-      count: Math.min(PROTOTYPE_ONLY.maxWaveCount, PROTOTYPE_ONLY.baseWaveCount + this.#pressure),
-      ...PROTOTYPE_ONLY.profiles[this.#stage],
+      count: wavePopulation(this.difficulty, wave, pressure),
+      ...this.strength,
     };
   }
 

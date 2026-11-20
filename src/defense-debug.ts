@@ -2,16 +2,23 @@ import Phaser from "phaser";
 import { overlapsCell, placementFailure } from "./build-placement.ts";
 import type { PlacementFailure, PlacementPreview } from "./build-placement.ts";
 import { DefenseSimulation, enemyPosition, sameCell } from "./defense-simulation.ts";
-import type { DefenseEvent } from "./defense-simulation.ts";
+import type { DefenseEvent, DefenseEventMetadata } from "./defense-simulation.ts";
+import type { BuildingKind } from "./buildings.ts";
 import { BUILDING_NAMES, ExpeditionControls } from "./expedition-controls.ts";
 import type { CardKind } from "./expedition-economy.ts";
+import type { DifficultyId } from "./expedition-difficulty.ts";
 import { ExpeditionRound } from "./expedition-round.ts";
+import type { RoundSpeed } from "./expedition-round.ts";
 import type { BiomeId } from "./expedition-biomes.ts";
 import { cellCenter, TILE_SIZE } from "./player.ts";
 import type { Player } from "./player.ts";
 import type { GridPosition, TerrainMap } from "./terrain.ts";
+import { WaveEconomyHistory } from "./wave-economy-history.ts";
 
 const SHOT_VISIBLE_MS = 140;
+const METRICS_REFRESH_MS = 200;
+const ATTACK_NOTICE_COOLDOWN_MS = 3_000;
+const BREACH_NOTICE_MS = 4_500;
 
 function field<T extends HTMLElement = HTMLElement>(id: string): T {
   const element = document.getElementById(id);
@@ -25,6 +32,14 @@ function write(field: HTMLElement, text: string): void {
 
 function coordinates({ col, row }: GridPosition): string { return `(${col}, ${row})`; }
 
+function relativeDirection(player: GridPosition, building: GridPosition): string {
+  const dx = building.col - player.col;
+  const dy = building.row - player.row;
+  if (dx === 0 && dy === 0) return "附近";
+  if (Math.abs(dy) >= Math.abs(dx)) return dy > 0 ? "南侧" : "北侧";
+  return dx > 0 ? "东侧" : "西侧";
+}
+
 type Shot = Extract<DefenseEvent, { type: "towerShot" }>;
 
 export interface DefenseScenario {
@@ -32,7 +47,8 @@ export interface DefenseScenario {
   readonly target: GridPosition;
   readonly worldSeed?: number;
   readonly fogEnabled?: boolean;
-  readonly fastRound?: boolean;
+  readonly roundSpeed?: RoundSpeed;
+  readonly difficulty?: DifficultyId;
   readonly debugControls?: boolean;
 }
 
@@ -48,6 +64,7 @@ export class DefenseDebug {
   private readonly stats = field("defense-stats");
   private readonly combatStats = field("defense-combat-stats");
   private readonly status = field("defense-feedback");
+  private readonly breach = field("round-breach");
   private readonly hover = field("defense-hover");
   private readonly count = field<HTMLSelectElement>("spawn-count");
   private readonly damage = field<HTMLSelectElement>("spawn-damage");
@@ -55,8 +72,12 @@ export class DefenseDebug {
   private readonly keys?: Record<"B" | "T" | "X", Phaser.Input.Keyboard.Key>;
   private readonly expedition?: ExpeditionControls;
   private readonly round?: ExpeditionRound;
+  private readonly economyHistory?: WaveEconomyHistory;
   private shots: { readonly event: Shot; readonly expires: number }[] = [];
   private timeMs = 0;
+  private nextMetricsAtMs = 0;
+  private readonly attackNoticeAt = new Map<string, number>();
+  private breachExpiresAtMs = 0;
 
   constructor(scene: Phaser.Scene, map: TerrainMap, player: Player, scenario: DefenseScenario,
     isVisible: (cell: GridPosition) => boolean) {
@@ -65,18 +86,20 @@ export class DefenseDebug {
     this.scenario = scenario;
     this.isVisible = isVisible;
     this.simulation = new DefenseSimulation(
-      map, scenario.entry, scenario.target, (event) => this.onEvent(event), scenario.worldSeed !== undefined,
+      map, scenario.entry, scenario.target, (event, metadata) => this.onEvent(event, metadata), scenario.worldSeed !== undefined,
     );
     this.graphics = scene.add.graphics().setDepth(1.5);
     this.labelLayer = scene.add.layer().setDepth(2.5);
     if (scenario.worldSeed !== undefined) {
-      this.round = new ExpeditionRound(scenario.fastRound);
+      this.round = new ExpeditionRound(scenario.roundSpeed, scenario.difficulty);
       this.expedition = new ExpeditionControls(scene, map, scenario.worldSeed, this.round, {
         debug: scenario.debugControls === true,
         spawnEnemy: () => this.spawnPrototypeEnemy(),
         spawnStress: (count) => this.spawnStress(count),
         checkPlacement: (cell, kind) => this.checkPlacement(cell, kind),
       });
+      this.economyHistory = new WaveEconomyHistory(this.expedition.economy.totals);
+      this.publishWaveMetrics(true);
       return;
     }
     this.keys = scene.input.keyboard!.addKeys("B,T,X", false) as typeof this.keys;
@@ -100,16 +123,23 @@ export class DefenseDebug {
     }
     const elapsed = Math.min(deltaMs, 50);
     this.timeMs += elapsed;
+    if (!this.breach.hidden && this.timeMs >= this.breachExpiresAtMs) this.clearBreach();
     if (this.round && this.expedition) {
       const { spawned, removed, pending } = this.simulation.spawnCounts;
+      const phase = this.round.phase;
       const wave = this.round.update(elapsed, this.player.cell.row, spawned - removed, pending);
       if (wave) {
-        this.simulation.requestSpawn(wave.count, wave.wallDamage, { hp: wave.enemyHp, contactDamage: wave.contactDamage });
+        this.economyHistory?.startWave(this.round.wave, this.expedition.economy.totals);
+        this.simulation.requestWave(this.round.wave, wave);
+      }
+      if (phase === "attacking" && this.round.phase === "recovering") {
+        this.simulation.finishAttackPhase(this.round.wave, spawned === removed && pending === 0 ? "resolved" : "time-limit");
       }
       this.expedition.economy.advance(elapsed);
       this.simulation.step(elapsed, this.player.cell);
       this.expedition.showRound(this.round);
       this.expedition.refresh();
+      this.publishWaveMetrics(phase !== this.round.phase);
     } else {
       this.simulation.step(elapsed, this.playerTarget.checked ? this.player.cell : undefined);
     }
@@ -181,11 +211,16 @@ export class DefenseDebug {
   reset(): void {
     this.simulation.reset();
     this.timeMs = 0;
+    this.nextMetricsAtMs = 0;
+    this.attackNoticeAt.clear();
+    this.clearBreach();
     this.shots = [];
     if (this.round && this.expedition) {
       this.round.reset();
       this.expedition.showRound(this.round);
       this.expedition.reset();
+      this.economyHistory?.reset(this.expedition.economy.totals);
+      this.publishWaveMetrics(true);
     }
     write(this.status, "等待布防或生成敌人");
   }
@@ -222,6 +257,7 @@ export class DefenseDebug {
 
   private stopCombat(): void {
     this.simulation.clearBattle();
+    this.publishWaveMetrics(true);
     this.shots = [];
     if (!this.round || !this.expedition) return;
     this.expedition.showRound(this.round);
@@ -265,24 +301,62 @@ export class DefenseDebug {
     });
   }
 
-  private onEvent(event: DefenseEvent): void {
-    this.expedition?.economy.handleEvent(event);
+  private publishWaveMetrics(force = false): void {
+    if (!this.scenario.debugControls || (!force && this.nextMetricsAtMs > this.timeMs)) return;
+    this.nextMetricsAtMs = this.timeMs + METRICS_REFRESH_MS;
+    const text = JSON.stringify(this.simulation.waveMetrics);
+    if (this.stats.dataset.waveCombat !== text) this.stats.dataset.waveCombat = text;
+    if (this.expedition && this.economyHistory) {
+      const economy = JSON.stringify(this.economyHistory.snapshot(this.expedition.economy.totals));
+      if (this.stats.dataset.waveEconomy !== economy) this.stats.dataset.waveEconomy = economy;
+    }
+  }
+
+  private onEvent(event: DefenseEvent, metadata: DefenseEventMetadata): void {
+    const credit = this.expedition?.economy.handleEvent(event) ?? 0;
+    this.economyHistory?.creditKill(metadata.waveId, credit);
     if (event.type === "towerShot") this.shots.push({ event, expires: this.timeMs + SHOT_VISIBLE_MS });
     if (event.type === "wallImpact") {
       const result = event.destroyed ? "墙已毁" : `墙剩 ${event.hp} HP`;
       write(this.status, `撞墙 · -${event.damage} HP · ${result}`);
-      this.expedition?.showFeedback(`城墙受袭 · -${event.damage} HP · ${result}`);
+      if (metadata.cell) this.showBuildingAttack("wall", metadata.cell, event.hp, event.destroyed);
     }
     if (event.type === "towerKill") write(this.status, `测试塔击杀敌人 ${event.enemyId}`);
-    if (event.type === "buildingHit") {
-      const result = event.destroyed ? "已摧毁" : `剩 ${event.hp} HP`;
-      this.expedition?.showFeedback(`${BUILDING_NAMES[event.buildingKind]} ${coordinates(event.cell)} 受袭 · ${result}`);
-    }
+    if (event.type === "buildingHit") this.showBuildingAttack(event.buildingKind, event.cell, event.hp, event.destroyed);
     if (event.type === "playerHit" && this.round) {
+      const previousHp = this.round.playerHp;
       this.round.hitPlayer(event.damage);
-      this.expedition?.showFeedback(`玩家受袭 · -${event.damage} HP`);
+      const damage = previousHp - this.round.playerHp;
+      this.simulation.recordPlayerDamage(metadata.waveId, damage);
+      if (damage > 0) this.expedition?.showFeedback(`玩家受袭 · -${damage} HP`);
       if (this.roundEnded) this.stopCombat();
     }
+  }
+
+  private showBuildingAttack(kind: BuildingKind, cell: GridPosition, hp: number, destroyed: boolean): void {
+    if (!this.expedition) return;
+    const position = coordinates(cell);
+    if (destroyed) {
+      this.attackNoticeAt.delete(position);
+    } else {
+      if (this.timeMs < (this.attackNoticeAt.get(position) ?? 0)) return;
+      this.attackNoticeAt.set(position, this.timeMs + ATTACK_NOTICE_COOLDOWN_MS);
+    }
+
+    const name = BUILDING_NAMES[kind];
+    if (kind === "wall" && destroyed) {
+      this.breachExpiresAtMs = this.timeMs + BREACH_NOTICE_MS;
+      this.breach.hidden = false;
+      write(this.breach, `${relativeDirection(this.player.cell, cell)}防线被突破 · ${name} ${position} 已摧毁`);
+      return;
+    }
+    this.expedition.showFeedback(`${name} ${position} 受袭 · ${destroyed ? "已摧毁" : `剩 ${hp} HP`}`);
+  }
+
+  private clearBreach(): void {
+    this.breach.hidden = true;
+    this.breachExpiresAtMs = 0;
+    write(this.breach, "");
   }
 
   private wallLabel(index: number, x: number, y: number, hp: number): void {

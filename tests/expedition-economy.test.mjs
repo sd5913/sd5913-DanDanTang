@@ -5,6 +5,7 @@ import { DEFENSE_CONFIG, DefenseSimulation } from "../src/defense-simulation.ts"
 import { CARD_KINDS, ECONOMY_PROTOTYPE, ExpeditionEconomy } from "../src/expedition-economy.ts";
 import { generateExpeditionMap } from "../src/generated-map.ts";
 import { TerrainMap } from "../src/terrain.ts";
+import { WaveEconomyHistory } from "../src/wave-economy-history.ts";
 
 const cell = (col, row) => ({ col, row });
 const technology = cell(22, 30);
@@ -220,4 +221,42 @@ test("reset restores cards, balance, draw stream, and a fresh facility after map
   assert.equal(economy.drawCard(), firstDraw);
   economy.handleEvent(towerKill(1));
   assert.equal(economy.balance, initialBalance - drawCost + towerKillReward);
+});
+
+
+test("wave accounting separates elapsed income from its originating combat cohort", () => {
+  const { map, economy } = createEconomy();
+  const history = new WaveEconomyHistory(economy.totals);
+  assert.ok(economy.placeCard("economy", cell(4, 4)));
+  economy.advance(2 * productionIntervalMs);
+  history.startWave(1, economy.totals);
+  assert.equal(economy.researchTool(), true);
+  assert.equal(economy.drawCard(), undefined);
+
+  history.creditKill(1, economy.handleEvent(towerKill(5)));
+  history.creditKill(1, economy.handleEvent(towerKill(5, "duplicate")));
+  history.startWave(2, economy.totals);
+  history.creditKill(1, economy.handleEvent(towerKill(6)));
+  economy.advance(productionIntervalMs);
+  assert.ok(economy.drawCard());
+  assert.deepEqual(economy.totals, {
+    balance: 2, killIncome: 4, productionIncome: 3, cardsMade: 1, cardSpend: 3, researchSpend: 10,
+  });
+  assert.deepEqual(history.snapshot(economy.totals), [
+    { waveId: 0, openingBalance: 8, balance: 10, net: 2, cohortKillIncome: 0,
+      killIncome: 0, productionIncome: 2, cardsMade: 0, cardSpend: 0, researchSpend: 0 },
+    { waveId: 1, openingBalance: 10, balance: 2, net: -8, cohortKillIncome: 4,
+      killIncome: 2, productionIncome: 0, cardsMade: 0, cardSpend: 0, researchSpend: 10 },
+    { waveId: 2, openingBalance: 2, balance: 2, net: 0, cohortKillIncome: 0,
+      killIncome: 2, productionIncome: 1, cardsMade: 1, cardSpend: 3, researchSpend: 0 },
+  ]);
+
+  map.reset();
+  economy.reset();
+  history.reset(economy.totals);
+  assert.equal(economy.balance, initialBalance);
+  assert.deepEqual(history.snapshot(economy.totals), [
+    { waveId: 0, openingBalance: 8, balance: 8, net: 0, cohortKillIncome: 0,
+      killIncome: 0, productionIncome: 0, cardsMade: 0, cardSpend: 0, researchSpend: 0 },
+  ]);
 });

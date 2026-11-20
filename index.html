@@ -50,13 +50,16 @@
 
           <section id="round-panel" aria-labelledby="round-title" hidden>
             <h2 id="round-title">对局</h2>
+            <label class="defense-controls">实验难度 <select id="round-difficulty"></select></label>
             <p id="round-state" aria-live="polite"></p>
+            <p id="round-breach" class="dig-result" data-outcome="rejected" role="status" hidden></p>
             <dl>
               <div><dt>生命</dt><dd id="player-hp"></dd></div>
-              <div><dt>本轮剩余</dt><dd id="round-time"></dd></div>
+              <div><dt id="round-time-label">下波倒计时</dt><dd id="round-time"></dd></div>
+              <div><dt>下波预计</dt><dd id="round-next-count"></dd></div>
               <div><dt>波次</dt><dd id="round-wave"></dd></div>
               <div><dt>进攻压力</dt><dd id="round-pressure"></dd></div>
-              <div><dt>深度阶段</dt><dd id="round-stage"></dd></div>
+              <div><dt>强度阶段</dt><dd id="round-stage"></dd></div>
             </dl>
           </section>
 

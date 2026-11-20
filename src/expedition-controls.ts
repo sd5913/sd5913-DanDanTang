@@ -65,6 +65,8 @@ export class ExpeditionControls {
   private readonly drawnCards: Record<CardKind, number> = { wall: 0, tower: 0, economy: 0 };
   private readonly state = field("round-state");
   private readonly time = field("round-time");
+  private readonly timeLabel = field("round-time-label");
+  private readonly nextCount = field("round-next-count");
   private readonly playerHp = field("player-hp");
   private readonly wave = field("round-wave");
   private readonly pressure = field("round-pressure");
@@ -211,12 +213,15 @@ export class ExpeditionControls {
     this.finished = phase === "won" || phase === "lost";
     if (this.finished) this.selected = undefined;
     if (this.state.dataset.phase !== phase) this.state.dataset.phase = phase;
-    write(this.state, PHASE_NAMES[phase]);
+    const upcoming = round.upcoming;
+    write(this.state, phase === "attacking" ? `第 ${wave} 波开始 · 敌人进攻中` : PHASE_NAMES[phase]);
     write(this.playerHp, String(playerHp));
     write(this.wave, String(wave));
     write(this.pressure, String(pressure));
-    write(this.stage, String(stage + 1));
+    write(this.stage, `${stage + 1} · ${round.strength.enemyHp} HP`);
+    write(this.timeLabel, this.finished ? "剩余时间" : upcoming ? "下波倒计时" : "进攻剩余");
     write(this.time, this.finished ? "—" : `${Math.ceil(remainingMs / 1000)} 秒`);
+    write(this.nextCount, upcoming ? `${upcoming.count} 只` : "—");
   }
 
   refresh(): void {

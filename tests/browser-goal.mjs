@@ -91,7 +91,7 @@ export async function runLossSmoke(page, url) {
   return { hp: loss.hp, wave: loss.wave, firstWaveSize: attack.requested, hpAfterFirstWave: recovery.hp };
 }
 
-function findDiggablePath(blockers) {
+export function findDiggablePath(blockers) {
   const start = GENERATED_SPAWN;
   const goal = GENERATED_GOAL;
   const width = layout[0].length;
@@ -130,7 +130,7 @@ function findDiggablePath(blockers) {
   return path;
 }
 
-async function followRoute(page, game, route) {
+export async function followRoute(page, game, route) {
   const visitedBiomes = new Set();
   let start = 0;
   while (start < route.length - 1) {

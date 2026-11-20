@@ -13,6 +13,10 @@ import { runFix02MapSmoke, runFix02DefenseSmoke, runFix02RoundSmoke, runSynthesi
 import { runLossSmoke, runVictorySmoke } from './browser-goal.mjs';
 import { runLongMapSmoke } from './browser-long-map.mjs';
 import { runTerminalMiningPreviewSmoke, runWideMiningPreviewSmoke } from './browser-mining-preview.mjs';
+import {
+  runPressureAlertsSmoke, runPressureEconomySmoke, runPressureFirstWaveSmoke, runPressureForecastSmoke,
+  runPressureOutcomeSmoke, runPressurePlayerContactSmoke, runPressureProfileSelectionSmoke, runPressureQueueRolloverSmoke,
+} from './browser-pressure.mjs';
 
 const host = '127.0.0.1';
 const root = fileURLToPath(new URL('..', import.meta.url));
@@ -37,6 +41,16 @@ try {
         (page) => runSingleMapSmoke(page, url + '/?map=single', { directionalOnly: true }));
       console.log(`Edge smoke (${mode}, directional mining): passed; amber Canvas outlines, locked strikes, stationary-pointer turns, key order and cancellation, cooldown, release, and blur verified; no browser errors.`);
       await runWideMiningPreviewBrowserSmoke(browser, url, mode);
+    } else if (process.argv.includes('--pressure-outcomes')) {
+      await runPressureOutcomesBrowserSmoke(browser, url, mode, true);
+    } else if (process.argv.includes('--pressure-alerts')) {
+      await runPressureAlertsBrowserSmoke(browser, url, mode);
+    } else if (process.argv.includes('--pressure-economy')) {
+      await runPressureEconomyBrowserSmoke(browser, url, mode);
+    } else if (process.argv.includes('--pressure-combat')) {
+      await runPressureCombatBrowserSmoke(browser, url, mode);
+    } else if (process.argv.includes('--pressure-profiles')) {
+      await runPressureProfilesBrowserSmoke(browser, url, mode, true);
     } else if (process.argv.includes('--fix01-a')) {
       await runCardFeedbackBrowserSmoke(browser, url, mode);
     } else if (process.argv.includes('--fix01-b')) {
@@ -48,6 +62,11 @@ try {
       await runStrataBrowserSmoke(browser, url, mode);
     } else {
       await runStandardBrowserSmoke(browser, url, mode);
+      await runPressureProfilesBrowserSmoke(browser, url, mode, process.argv.includes('--normal-round'));
+      await runPressureCombatBrowserSmoke(browser, url, mode);
+      await runPressureEconomyBrowserSmoke(browser, url, mode);
+      await runPressureAlertsBrowserSmoke(browser, url, mode);
+      await runPressureOutcomesBrowserSmoke(browser, url, mode, process.argv.includes('--normal-round'));
       await runCardFeedbackBrowserSmoke(browser, url, mode);
       await runBuildRangeBrowserSmoke(browser, url, mode);
     }
@@ -56,6 +75,64 @@ try {
   }
 } finally {
   await server.close();
+}
+
+async function runPressureProfilesBrowserSmoke(browser, url, mode, includeNormalTiming) {
+  const viewport = { width: 1280, height: 900 };
+  await withSmokePage(browser, viewport, (page) => runPressureProfileSelectionSmoke(page, url));
+  console.log(`Edge smoke (${mode}, pressure profile selection): passed; Baseline/A/B selection, same-seed world, and reload verified; no browser errors.`);
+  const speeds = includeNormalTiming ? ['test', 'normal'] : ['test'];
+  for (const speed of speeds) {
+    for (const profile of ['baseline', 'a', 'b']) {
+      const wave = await withSmokePage(browser, viewport,
+        (page) => runPressureFirstWaveSmoke(page, url, profile, speed));
+      console.log(`Edge smoke (${mode}, pressure profile wave): passed; ${JSON.stringify(wave)}; queue, reset and no browser errors verified.`);
+    }
+  }
+}
+
+async function runPressureCombatBrowserSmoke(browser, url, mode) {
+  const viewport = { width: 1280, height: 900 };
+  const rollover = await withSmokePage(browser, viewport, (page) => runPressureQueueRolloverSmoke(page, url));
+  console.log(`Edge smoke (${mode}, pressure queue rollover): passed; real tech damage, stalled entry retained across waves, and reset verified; no browser errors.`);
+  console.log(JSON.stringify(rollover));
+  const contact = await withSmokePage(browser, viewport, (page) => runPressurePlayerContactSmoke(page, url));
+  console.log(`Edge smoke (${mode}, pressure player contact): passed; damage timestamps and terminal cancellation reconciled; no browser errors.`);
+  console.log(JSON.stringify(contact));
+}
+
+async function runPressureEconomyBrowserSmoke(browser, url, mode) {
+  const viewport = { width: 1280, height: 900 };
+  const a = await withSmokePage(browser, viewport, (page) => runPressureEconomySmoke(page, url, 'a'));
+  const b = await withSmokePage(browser, viewport, (page) => runPressureEconomySmoke(page, url, 'b'));
+  assert.equal(a.planned, b.planned);
+  assert.ok(b.towerKills < a.towerKills && b.wallImpacts > a.wallImpacts);
+  assert.ok(b.averageTowerHitsOnKill > a.averageTowerHitsOnKill);
+  console.log(`Edge smoke (${mode}, pressure economy): passed; paired A/B tower hits, wall HP, kill rewards, production, spending and reset verified; no browser errors.`);
+  console.log(JSON.stringify([a, b]));
+}
+
+async function runPressureAlertsBrowserSmoke(browser, url, mode) {
+  const viewport = { width: 1280, height: 900 };
+  await withSmokePage(browser, viewport, (page) => runPressureForecastSmoke(page, url));
+  console.log(`Edge smoke (${mode}, pressure forecast): passed; normal countdown, wave size and enemy strength verified; no browser errors.`);
+  const alerts = await withSmokePage(browser, viewport, (page) => runPressureAlertsSmoke(page, url));
+  console.log(`Edge smoke (${mode}, battlefield alerts): passed; attack, real offscreen warning, deduplication, distinct breach, fog and reset verified; no browser errors.`);
+  console.log(JSON.stringify(alerts));
+}
+
+async function runPressureOutcomesBrowserSmoke(browser, url, mode, includeNormalTiming) {
+  const viewport = { width: 1280, height: 900 };
+  const speeds = includeNormalTiming ? ['wait-test', 'normal'] : ['wait-test'];
+  for (const speed of speeds) {
+    for (const profile of ['baseline', 'a', 'b']) {
+      for (const outcome of ['lost', 'won']) {
+        const result = await withSmokePage(browser, viewport,
+          (page) => runPressureOutcomeSmoke(page, url, profile, speed, outcome));
+        console.log(`Edge smoke (${mode}, pressure outcome): passed; ${JSON.stringify(result)}; no browser errors.`);
+      }
+    }
+  }
 }
 
 async function runCardFeedbackBrowserSmoke(browser, url, mode) {
