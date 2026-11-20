@@ -5,6 +5,7 @@ import { extname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { chromium } from "playwright-core";
 import { build } from "vite";
+import { PLAYTEST_TOWER_TUNING } from "../src/building-balance.ts";
 
 const host = "127.0.0.1";
 const viewport = { width: 1280, height: 900 };
@@ -56,7 +57,7 @@ function summarize(samples) {
   assert.ok(samples.length > 0);
   const ordered = [...samples].sort((left, right) => left - right);
   const percentile = (fraction) => ordered[Math.ceil(fraction * ordered.length) - 1];
-  return { count: samples.length, medianMs: percentile(0.5), p95Ms: percentile(0.95), worstMs: ordered.at(-1) };
+  return { count: samples.length, medianMs: percentile(0.5), p95Ms: percentile(0.95), p99Ms: percentile(0.99), worstMs: ordered.at(-1) };
 }
 
 async function measure(browser, url, scopedCount, sampleMs) {
@@ -86,6 +87,10 @@ async function measure(browser, url, scopedCount, sampleMs) {
       let seenEffects;
       let effects = { piercing: 0, burst: 0, recent: [] };
       const countedOverlaps = new Set();
+      const countedAttacks = new Set();
+      const towerActivity = {};
+      const canvas = document.querySelector("#board canvas");
+      const display = { devicePixelRatio, canvasWidth: canvas.width, canvasHeight: canvas.height };
 
       requestAnimationFrame(function sample(timestamp) {
         if (lastFrame !== undefined) frameSpans.push(timestamp - lastFrame);
@@ -98,12 +103,21 @@ async function measure(browser, url, scopedCount, sampleMs) {
           seenEffects = stats.towerEffects;
           effects = JSON.parse(seenEffects);
           for (const event of effects.recent) {
-            if (event.effect.kind === "piercing") maxPiercingTargets = Math.max(maxPiercingTargets, event.enemyIds.length);
-            if (event.effect.kind !== "burst") continue;
+            const attackKey = `${event.towerId}:${event.timeMs}`;
+            const kind = event.effect.kind;
+            if (!countedAttacks.has(attackKey)) {
+              countedAttacks.add(attackKey);
+              const summary = towerActivity[event.towerId] ??= { kind, shots: 0, grouped: 0, targets: 0 };
+              summary.shots += 1;
+              summary.grouped += Number(event.enemyIds.length > 1);
+              summary.targets += event.enemyIds.length;
+            }
+            if (kind === "piercing") maxPiercingTargets = Math.max(maxPiercingTargets, event.enemyIds.length);
+            if (kind !== "burst") continue;
             maxBurstTargets = Math.max(maxBurstTargets, event.enemyIds.length);
-            if (!countedOverlaps.has(event.timeMs) && effects.recent.some((other) => other.effect.kind === "piercing"
+            if (!countedOverlaps.has(attackKey) && effects.recent.some((other) => other.effect.kind === "piercing"
                 && Math.abs(other.timeMs - event.timeMs) < 140)) {
-              countedOverlaps.add(event.timeMs);
+              countedOverlaps.add(attackKey);
               burstsWithOverlappingEffects += 1;
             }
           }
@@ -121,7 +135,8 @@ async function measure(browser, url, scopedCount, sampleMs) {
           nativeRaf, durationMs: now - windowOpenedAt, ...initial, firstFrameActive, peakActive, peakVisible,
           spawned: Number(stats.spawned), removed: Number(stats.removed), hitEvents: Number(stats.shots),
           towerKills: Number(stats.towerKills), piercingAttacks: effects.piercing, burstAttacks: effects.burst,
-          maxPiercingTargets, maxBurstTargets, burstsWithOverlappingEffects, effectWindows, visibility: fixture.visibility(),
+          maxPiercingTargets, maxBurstTargets, burstsWithOverlappingEffects, effectWindows, towerActivity, display,
+          visibility: fixture.visibility(),
           frameSpans, simulationStepSpans: fixture.stop(),
         });
       });
@@ -130,11 +145,18 @@ async function measure(browser, url, scopedCount, sampleMs) {
     assert.equal(raw.nativeRaf, true);
     assert.deepEqual(raw.visibility, { current: "visible", far: "unknown" });
     assert.ok(raw.durationMs >= sampleMs && raw.frameSpans.length >= 30);
+    const towerActivity = Object.values(raw.towerActivity);
+    assert.equal(towerActivity.reduce((sum, tower) => sum + tower.shots, 0), raw.piercingAttacks + raw.burstAttacks);
+    assert.equal(towerActivity.reduce((sum, tower) => sum + tower.targets, 0), raw.hitEvents);
     if (scopedCount === "sustained") {
       assert.ok(raw.spawned >= 60 && raw.peakVisible > 0);
       assert.ok(raw.piercingAttacks >= 10 && raw.burstAttacks >= 10);
       assert.ok(raw.maxPiercingTargets > 1 && raw.maxBurstTargets > 1);
       assert.ok(raw.burstsWithOverlappingEffects > 0);
+      for (const kind of ["piercing", "burst"]) {
+        assert.equal(towerActivity.filter((tower) => tower.kind === kind && tower.grouped > 0).length, 2,
+          `Both ${kind} towers must record a grouped hit in the sustained sample`);
+      }
       let lastPiercing = 0;
       let lastBurst = 0;
       for (const window of raw.effectWindows) {
@@ -176,10 +198,10 @@ try {
       const directory = join(await realpath(root), ".estd-private");
       await mkdir(directory, { recursive: true });
       assert.equal(await realpath(directory), directory);
-      const filename = `p0-i-edge-perf-${new Date().toISOString().replaceAll(":", "-")}.json`;
+      const filename = `p0-i-fix01-edge-perf-${new Date().toISOString().replaceAll(":", "-")}.json`;
       const output = join(directory, filename);
       await writeFile(output, JSON.stringify({
-        edge: browser.version(), viewport,
+        edge: browser.version(), viewport, towerTuning: PLAYTEST_TOWER_TUNING,
         source: "Compiled Vite test entry with real GridScene, Phaser canvas, real simulation, native RAF",
         results,
       }, null, 2), { flag: "wx" });

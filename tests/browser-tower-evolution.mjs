@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { CONTROL_TOWER_TUNING, PLAYTEST_TOWER_TUNING, evolvedTowerAttributes } from '../src/building-balance.ts';
 import { GENERATED_SPAWN } from '../src/generated-map.ts';
 import { TILE_SIZE } from '../src/player.ts';
 import { readCardInventory } from './browser-card-feedback.mjs';
@@ -12,13 +13,13 @@ const cases = {
     name: 'Piercing Tower Lv.2', direction: '横向穿透',
     targets: [cell(22, 90), cell(23, 90), cell(24, 90), cell(25, 90)],
     builders: [cell(22, 91), cell(23, 91), cell(24, 91), cell(25, 91)],
-    stats: /横向穿透 · 伤害 5 · 最多 4 个目标 · 射程 7 格 · 间隔 900 ms/,
+    evolution: { kind: 'piercing', axis: 'horizontal' },
   },
   burst: {
     name: 'Burst Tower Lv.2', direction: '范围爆裂',
     targets: [cell(25, 92), cell(25, 91), cell(26, 91), cell(26, 92)],
     builders: [cell(24, 92), cell(24, 91), cell(27, 91), cell(27, 92)],
-    stats: /范围爆裂 · 主伤害 4 · 溅射 2 · 半径 1\.25 格 · 射程 4 格 · 间隔 650 ms/,
+    evolution: { kind: 'burst' },
   },
 };
 
@@ -41,11 +42,14 @@ async function tileInk(page, game, tile, color, tolerance) {
 async function readPathing(page) {
   return page.locator('#defense-stats').evaluate(({ dataset }) => ({
     active: Number(dataset.active), removed: Number(dataset.removed), searches: Number(dataset.searches),
+    spawned: Number(dataset.spawned),
   }));
 }
 
 export async function preparePaidEvolvedTower(page, baseUrl, kind, { playtest = false, checkRepath = false } = {}) {
-  const { name, direction, targets, builders, stats } = cases[kind];
+  const { name, direction, targets, builders, evolution } = cases[kind];
+  const tuning = playtest ? PLAYTEST_TOWER_TUNING : CONTROL_TOWER_TUNING;
+  const attack = evolvedTowerAttributes(evolution, 'ordinary', tuning);
   const [retained, ...released] = targets;
   const target = released.at(-1);
   const run = await fundFourTowerCards(page, baseUrl, 'combined', {
@@ -99,15 +103,16 @@ export async function preparePaidEvolvedTower(page, baseUrl, kind, { playtest = 
 
   let beforePath;
   if (checkRepath) {
-    await page.locator('#expedition-spawn').click();
+    if (playtest) await startFirstWave(page, run.start, { publicBuild: true });
+    else await page.locator('#expedition-spawn').click();
     await run.game.aimAt(target);
-    await page.clock.runFor(64);
+    await page.clock.runFor(playtest ? 16 : 64);
     beforePath = await readPathing(page);
     assert.equal(beforePath.active, 1);
     assert.equal(beforePath.removed, 0);
     assert.ok(beforePath.searches > 0);
-    await page.clock.runFor(32);
-    assert.equal((await readPathing(page)).searches, beforePath.searches, 'A stable world must reuse its path fields');
+    await page.clock.runFor(16);
+    assert.deepEqual(await readPathing(page), beforePath, 'A stable world must reuse its path fields');
     assert.equal(await preview.textContent(), previewText);
   }
 
@@ -126,13 +131,16 @@ export async function preparePaidEvolvedTower(page, baseUrl, kind, { playtest = 
     }
     assert.equal(afterPath.active, beforePath.active, 'The original enemy must remain active after the merge');
     assert.equal(afterPath.removed, beforePath.removed);
+    assert.equal(afterPath.spawned, beforePath.spawned, 'The route search must occur before the next enemy enters');
     assert.ok(afterPath.searches > beforePath.searches, 'Released occupancy must invalidate enemy path fields');
   }
 
   await run.game.inspect(retained, '空地');
   await page.clock.runFor(32);
   assert.equal(await run.building.textContent(), `${name} ${label(retained)} · 1 HP`);
-  assert.match(await page.locator('#expedition-building-stats').textContent(), stats);
+  const damage = attack.kind === 'piercing' ? `伤害 5 · 最多 4 个目标` : `主伤害 4 · 溅射 2 · 半径 ${attack.radius} 格`;
+  assert.equal(await page.locator('#expedition-building-stats').textContent(),
+    `${direction} · ${damage} · 射程 ${attack.range} 格 · 间隔 ${attack.intervalMs} ms`);
   for (const tile of released) {
     run.occupied.delete(label(tile));
     await run.game.inspect(tile, '空地');
@@ -142,7 +150,7 @@ export async function preparePaidEvolvedTower(page, baseUrl, kind, { playtest = 
   await run.returnTo(released[0]);
   assert.deepEqual(await run.game.position(), released[0], 'The released world tile must be walkable');
   await run.returnTo(GENERATED_SPAWN);
-  return { ...run, retained, released, searches: afterPath ? [beforePath.searches, afterPath.searches] : undefined };
+  return { ...run, retained, released, attack, searches: afterPath ? [beforePath.searches, afterPath.searches] : undefined };
 }
 
 export async function runEvolvedTowerCombatSmoke(page, baseUrl, kind) {
@@ -166,7 +174,7 @@ export async function runEvolvedTowerCombatSmoke(page, baseUrl, kind) {
     await advanceUntil(page, (round) => round.wave === 1 && round.phase === 'recovering',
       'The paid horizontal tower must clear the normal first wave', 8_000);
   } else {
-    assert.equal(groupShot.effect.radius, 1.25);
+    assert.equal(groupShot.effect.radius, CONTROL_TOWER_TUNING.burstRadius);
   }
   return { seed: 515, kind, retained: run.retained, released: run.released, searches: run.searches,
     groupedHitCount: groupShot.enemyIds.length, simulatedEventTimeMs: groupShot.timeMs };

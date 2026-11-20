@@ -1,5 +1,5 @@
-import { readBuildingBalance } from "./building-balance.ts";
-import type { BuildingBalanceId } from "./building-balance.ts";
+import { CONTROL_TOWER_TUNING, PLAYTEST_TOWER_TUNING, readBuildingBalance } from "./building-balance.ts";
+import type { BuildingBalanceId, TowerTuning } from "./building-balance.ts";
 import { readDifficulty } from "./expedition-difficulty.ts";
 import type { DifficultyId } from "./expedition-difficulty.ts";
 import type { RoundSpeed } from "./expedition-round.ts";
@@ -10,6 +10,7 @@ export const PLAYTEST_PROFILE = Object.freeze({
   difficulty: "challenge",
   buildingBalance: "w25",
   midgame: "combined",
+  towerTuning: PLAYTEST_TOWER_TUNING,
 } as const);
 
 interface LaunchConfig {
@@ -23,6 +24,7 @@ interface LaunchConfig {
   readonly roundSpeed: RoundSpeed;
   readonly debugControls: boolean;
   readonly towerEvolution: boolean;
+  readonly towerTuning: TowerTuning;
 }
 
 export function resolveLaunch(params: URLSearchParams, environment: "production" | "development" | "regression"): LaunchConfig {
@@ -50,5 +52,6 @@ export function resolveLaunch(params: URLSearchParams, environment: "production"
     roundSpeed: speed === "wait-test" ? "wait-test" : speed === "test",
     debugControls: params.get("debug") === "1",
     towerEvolution: params.get("evolution") === "1",
+    towerTuning: CONTROL_TOWER_TUNING,
   };
 }

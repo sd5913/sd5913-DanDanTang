@@ -1,6 +1,6 @@
 import Phaser from "phaser";
 import { evolvedTowerAttributes, productionAttributes, towerAttributes } from "./building-balance.ts";
-import type { BuildingBalanceId } from "./building-balance.ts";
+import type { BuildingBalanceId, TowerTuning } from "./building-balance.ts";
 import { overlapsCell, placementFailure } from "./build-placement.ts";
 import type { PlacementFailure, PlacementPreview } from "./build-placement.ts";
 import { DefenseSimulation, enemyWorldPosition, sameCell } from "./defense-simulation.ts";
@@ -69,6 +69,7 @@ export interface DefenseScenario {
   readonly midgame?: MidgameExperimentId;
   readonly debugControls?: boolean;
   readonly towerEvolution?: boolean;
+  readonly towerTuning?: TowerTuning;
 }
 
 export class DefenseDebug {
@@ -115,6 +116,7 @@ export class DefenseDebug {
     this.isVisible = isVisible;
     this.simulation = new DefenseSimulation(
       map, scenario.entry, scenario.target, (event, metadata) => this.onEvent(event, metadata), scenario.worldSeed !== undefined,
+      { towerTuning: scenario.towerTuning },
     );
     this.graphics = scene.add.graphics().setDepth(1.5);
     this.labelLayer = scene.add.layer().setDepth(2.5);
@@ -346,7 +348,7 @@ export class DefenseDebug {
       write(this.buildingStats, `${prefix} · 耐久 ${building.hp}/${building.maxHp} HP`);
     } else if (building.evolution) {
       const { evolution } = building;
-      const attack = evolvedTowerAttributes(evolution, biome);
+      const attack = evolvedTowerAttributes(evolution, biome, this.scenario.towerTuning);
       const range = attack.range > attack.baseRange ? `${attack.range} 格（${attack.baseRange} + 高山 ${attack.range - attack.baseRange}）`
         : `${attack.range} 格`;
       const damage = attack.kind === "piercing" ? `伤害 ${attack.damage} · 最多 ${attack.maxTargets} 个目标`

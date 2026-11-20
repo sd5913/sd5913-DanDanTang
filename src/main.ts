@@ -20,8 +20,9 @@ import "./style.css";
 
 const params = new URLSearchParams(window.location.search);
 const environment = import.meta.env.MODE === "regression" ? "regression" : import.meta.env.DEV ? "development" : "production";
-const { diagnostics, mode, fixture, difficulty, buildingBalance, midgame, fogEnabled, roundSpeed, debugControls, towerEvolution } =
-  resolveLaunch(params, environment);
+const {
+  diagnostics, mode, fixture, difficulty, buildingBalance, midgame, fogEnabled, roundSpeed, debugControls, towerEvolution, towerTuning,
+} = resolveLaunch(params, environment);
 const defense = mode === "defense";
 const play = mode === "play";
 const wide = play || (fixture !== "fix01" && (defense || (fixture !== "single" && fixture !== "regression")));
@@ -53,6 +54,7 @@ const defenseOptions = play && world
       midgame,
       debugControls,
       towerEvolution,
+      towerTuning,
     }
   : !defense ? undefined : wide
     ? { entry: GENERATED_ENEMY_ENTRY, target: GENERATED_GOAL }

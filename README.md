@@ -38,10 +38,10 @@ I chose to let the shape of four connected towers determine what they become. A 
 
 | Candidate tower | Attack | Interval | Base range |
 | --- | --- | ---: | ---: |
-| Piercing Tower Lv.2 | Deals 5 damage each to up to four enemies along one side of its fixed axis. | 900 ms | 7 tiles |
-| Burst Tower Lv.2 | Deals 4 damage to its target and 2 to nearby enemies within 1.25 tiles of the impact. | 650 ms | 4 tiles |
+| Piercing Tower Lv.2 | Deals 5 damage each to up to four enemies along one side of its fixed axis. | 750 ms | 7 tiles |
+| Burst Tower Lv.2 | Deals 4 damage to its target and 2 to nearby enemies within 2 tiles of the impact. | 650 ms | 4 tiles |
 
-Rock, undug terrain, water, and buildings can block these attacks. Highland adds 2 tiles to range. Both towers have 1 HP. These values are provisional for playtesting.
+Rock, undug terrain, water, and buildings can block these attacks. Highland adds 2 tiles to range. Both towers have 1 HP. The faster piercing shot helps on straight lanes, and the larger blast reaches more enemies in a queue. Keep room for follow-up construction. Freed tiles can fit more cards and can also open a shortcut for enemies. These values are provisional for playtesting.
 
 The midgame rules target 200, 150, then 100 ms between releases as waves advance, subject to space at the southern entrance. After the second depth stage is reached, 25% of planned slots are gold, ringed 14 HP enemies, rounded to the nearest enemy. Card crafts 1–3 cost 3, crafts 4–8 cost 6, and later crafts cost 9. Each spawn wave awards 2 for its first eight tower kills and 1 for each subsequent kill from that wave.
 
@@ -58,9 +58,9 @@ npm run test:browser
 npm run preview
 ```
 
-The build writes the player distribution to `dist/`. Use `--playtest` to test this production output in a locally installed Edge. The historical browser suite builds its own temporary diagnostic artifact. Use `--normal-round` for standard-timing regression, or `--challenge`, `--building-balance`, `--contacts`, and `--midgame` for targeted suites. The tower evolution suite is available with `--tower-evolution`. The standalone test scripts `tests/browser-stress.mjs` and `tests/browser-midgame-perf.mjs` measure short load and sustained defense. Run `node tests/tower-evolution-comparison.mjs` to repeat the matched tower comparison and `node tests/browser-tower-evolution-perf.mjs` to sample both evolved towers under load in Edge.
+The build writes the player distribution to `dist/`. Use `--playtest` to test this production output in a locally installed Edge. The historical browser suite builds its own temporary diagnostic artifact. Use `--normal-round` for standard-timing regression, or `--challenge`, `--building-balance`, `--contacts`, and `--midgame` for targeted suites. The tower evolution suite is available with `--tower-evolution`. The standalone test scripts `tests/browser-stress.mjs` and `tests/browser-midgame-perf.mjs` measure short load and sustained defense. Run `node tests/tower-specialization.mjs` for the matched radius and cooldown experiments and `node tests/tower-space-comparison.mjs` for the equal-cost construction comparison. Use `node tests/browser-tower-evolution-perf.mjs` to sample both evolved towers under load in Edge.
 
-For development diagnostics, start the dev server and use `?diagnostics=1&mode=play`. This opens the historical difficulty, building, and midgame selectors. Add `&debug=1` to access tools such as **玩家受击记录**. In this diagnostic environment, `&evolution=1` enables shape-based towers. The historical level-two tower remains available for regression and comparison. The player distribution accepts a world seed and uses its fixed playtest rules for every round.
+For development diagnostics, start the dev server and use `?diagnostics=1&mode=play`. This opens the historical difficulty, building, and midgame selectors. Add `&debug=1` to access tools such as **玩家受击记录**. In this diagnostic environment, `&evolution=1` enables shape-based towers with the original combat values. The historical level-two tower remains available for regression and comparison. The player distribution accepts a world seed and uses its fixed playtest rules for every round.
 
 ## Project records
 

@@ -1,4 +1,5 @@
 import Phaser from "phaser";
+import { PLAYTEST_TOWER_TUNING } from "../src/building-balance.ts";
 import { TILE_SIZE } from "../src/player.ts";
 import { GridScene } from "../src/scene.ts";
 import "../src/style.css";
@@ -6,16 +7,21 @@ import "../src/style.css";
 const columns = 64;
 const rows = 32;
 const entry = { col: 12, row: 15 };
-const target = { col: 60, row: 15 };
+const target = { col: 60, row: 19 };
 const towerGroups = [
   { kind: "piercing", positions: [[11, 15], [10, 15], [9, 15], [8, 15]] },
   { kind: "burst", positions: [[17, 14], [17, 13], [18, 13], [18, 14]] },
+  { kind: "piercing", positions: [[21, 14], [21, 13], [21, 12], [21, 11]] },
+  { kind: "burst", positions: [[22, 17], [22, 16], [23, 16], [23, 17]] },
 ];
 const layout = Array.from({ length: rows }, (_, row) => Array.from({ length: columns }, (_, col) => {
   if (col === 14 && row === 12) return "S";
   if (col === target.col && row === target.row) return "G";
-  if (row === entry.row && col >= 8 && col <= target.col) return ".";
-  if (col >= 8 && col <= 22 && row >= 11 && row <= 17) return ".";
+  if (col >= 8 && col <= 20 && row >= 11 && row <= 15) return ".";
+  if (col === 20 && row >= 16 && row <= 17) return ".";
+  if (col === 21 && row >= 11 && row <= 19) return ".";
+  if (col >= 22 && col <= 23 && row >= 16 && row <= 17) return ".";
+  if (row === target.row && col >= 21 && col <= target.col) return ".";
   return "#";
 }).join(""));
 
@@ -87,5 +93,6 @@ new Phaser.Game({
   input: { touch: false, gamepad: false },
   scene: new TowerPerfScene(layout, {
     entry, target, buildingBalance: "w25", fogEnabled: true, debugControls: true, towerEvolution: true,
+    towerTuning: PLAYTEST_TOWER_TUNING,
   }, true),
 });

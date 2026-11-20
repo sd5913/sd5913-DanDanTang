@@ -1,7 +1,7 @@
 import { EnemyNavigation } from "./enemy-navigation.ts";
 import type { NavigationAction } from "./enemy-navigation.ts";
 import { TOWER_LEVEL_ONE, evolvedTowerAttributes, towerAttributes } from "./building-balance.ts";
-import type { BurstTowerAttributes, PiercingTowerAttributes } from "./building-balance.ts";
+import type { BurstTowerAttributes, PiercingTowerAttributes, TowerTuning } from "./building-balance.ts";
 import type { Building, BuildingKind } from "./buildings.ts";
 import { boxDistance, ENEMY_RADIUS, sweepPlayerContact } from "./enemy-contact.ts";
 import type { PlayerContact } from "./enemy-contact.ts";
@@ -11,6 +11,8 @@ import type { Point } from "./player.ts";
 import type { GridPosition, TerrainMap } from "./terrain.ts";
 import { buildEvolvedTowerCoverage, evolvedTargetDistanceSquared, hasTowerLineOfSight } from "./tower-attack.ts";
 import type { PiercingCoverage } from "./tower-attack.ts";
+import { TowerCombatDiagnostics } from "./tower-combat-diagnostics.ts";
+import type { TowerCombatSnapshot, TowerHitRole } from "./tower-combat-diagnostics.ts";
 import { WaveCombatMetrics } from "./wave-combat-metrics.ts";
 import type { AttackEndReason, TowerExposureAnchor, WaveCombatSnapshot } from "./wave-combat-metrics.ts";
 
@@ -39,6 +41,7 @@ export interface WaveDeployment {
 
 const DEFAULT_ENEMY_PROFILE: EnemyProfile = { hp: DEFENSE_CONFIG.enemyHp, contactDamage: 1 };
 const DEFAULT_DEPLOYMENT: WaveDeployment = { intervalMs: DEFENSE_CONFIG.spawnIntervalMs };
+const SPLASH_DISTANCE_EPSILON = 1e-9;
 
 interface EnemyMove {
   readonly to: GridPosition;
@@ -136,6 +139,11 @@ export interface DefenseEventMetadata {
 
 type DefenseEmitter = (event: DefenseEvent, metadata: DefenseEventMetadata) => void;
 
+export interface DefenseSimulationOptions {
+  readonly towerTuning?: TowerTuning;
+  readonly towerDiagnostics?: boolean;
+}
+
 function newCounters() {
   return { wallImpacts: 0, wallsDestroyed: 0, towerKills: 0, shots: 0, playerContacts: 0, buildingContacts: 0 };
 }
@@ -182,6 +190,8 @@ export class DefenseSimulation {
   private readonly buildingTarget: Target;
   private readonly emit: DefenseEmitter;
   private readonly expeditionCombat: boolean;
+  private readonly towerTuning?: TowerTuning;
+  private readonly combatDiagnostics?: TowerCombatDiagnostics;
   private readonly waveCombat = new WaveCombatMetrics();
   private readonly units = new Map<number, EnemyState>();
   private readonly spawnQueue: SpawnRequest[] = [];
@@ -203,12 +213,14 @@ export class DefenseSimulation {
   private exposureTowers: TowerExposureAnchor[] = [];
 
   constructor(map: TerrainMap, entry: GridPosition, target: GridPosition, emit: DefenseEmitter = () => {},
-    expeditionCombat = false) {
+    expeditionCombat = false, options: DefenseSimulationOptions = {}) {
     this.map = map;
     this.entry = entry;
     this.buildingTarget = { kind: "building", cell: target };
     this.emit = emit;
     this.expeditionCombat = expeditionCombat;
+    this.towerTuning = options.towerTuning;
+    if (options.towerDiagnostics) this.combatDiagnostics = new TowerCombatDiagnostics(map);
     this.navigation = new EnemyNavigation(map);
   }
 
@@ -218,6 +230,7 @@ export class DefenseSimulation {
   get searchTimeMs(): number { return this.navigation.searchTimeMs; }
   get elapsedMs(): number { return this.timeMs; }
   get waveMetrics(): readonly WaveCombatSnapshot[] { return this.waveCombat.snapshots(this.timeMs); }
+  get towerDiagnostics(): readonly TowerCombatSnapshot[] | undefined { return this.combatDiagnostics?.snapshots(this.timeMs); }
 
   getWaveMetrics(waveId: number): WaveCombatSnapshot | undefined { return this.waveCombat.snapshot(waveId, this.timeMs); }
 
@@ -280,6 +293,7 @@ export class DefenseSimulation {
     // Terminal cleanup cancels waiting requests while preserving lifetime spawn totals.
     this.cancelledSpawns += this.spawnCounts.pending;
     this.spawnQueue.length = 0;
+    this.combatDiagnostics?.clearBattle(this.timeMs);
     this.units.clear();
     this.waveCombat.clearBattle(this.timeMs);
   }
@@ -302,6 +316,7 @@ export class DefenseSimulation {
     this.threatBuildings = [];
     this.exposureTowers = [];
     this.waveCombat.reset();
+    this.combatDiagnostics?.reset();
   }
 
   step(deltaMs: number, player?: GridPosition | PlayerTarget): void {
@@ -312,6 +327,7 @@ export class DefenseSimulation {
     for (const building of this.map.getBuildings()) {
       if (building.kind === "tower") this.fireTower(building);
     }
+    this.combatDiagnostics?.finishStep(this.timeMs);
     this.releaseSpawn(target?.cell);
   }
 
@@ -447,6 +463,7 @@ export class DefenseSimulation {
 
   private hitPlayer(enemy: EnemyState, cell: GridPosition, contact: PlayerContact, timeMs: number): void {
     this.units.delete(enemy.id);
+    this.combatDiagnostics?.endEnemy(enemy.id, timeMs, "player-contact");
     this.counts.playerContacts += 1;
     this.waveCombat.resolve(enemy.id, "playerContacts", timeMs);
     this.emit({ type: "playerHit", enemyId: enemy.id, damage: enemy.contactDamage }, {
@@ -470,7 +487,7 @@ export class DefenseSimulation {
       if (building.kind === "tower") {
         const biome = this.map.getBiome(building.cell);
         const { range } = building.evolution
-          ? evolvedTowerAttributes(building.evolution, biome)
+          ? evolvedTowerAttributes(building.evolution, biome, this.towerTuning)
           : towerAttributes(this.map.buildingBalance, building.level, biome);
         this.exposureTowers.push({ cell: building.cell, radius: range });
       }
@@ -587,6 +604,7 @@ export class DefenseSimulation {
     const impact = this.map.impactWall(cell, wallId, enemy.wallDamage);
     if (!impact) return;
     this.units.delete(enemy.id);
+    this.combatDiagnostics?.endEnemy(enemy.id, this.timeMs, "wall-impact");
     this.counts.wallImpacts += 1;
     if (impact.destroyed) this.counts.wallsDestroyed += 1;
     this.waveCombat.resolve(enemy.id, "wallImpacts", this.timeMs, impact.damage, impact.destroyed);
@@ -595,10 +613,11 @@ export class DefenseSimulation {
   }
 
   private fireTower(tower: Building): void {
+    if (this.combatDiagnostics) this.observeTower(tower, this.combatDiagnostics);
     if (!this.units.size || (this.towerReadyAt.get(tower.cell) ?? 0) > this.timeMs) return;
     const biome = this.map.getBiome(tower.cell);
     if (tower.evolution) {
-      const attributes = evolvedTowerAttributes(tower.evolution, biome);
+      const attributes = evolvedTowerAttributes(tower.evolution, biome, this.towerTuning);
       if (attributes.kind === "piercing") this.firePiercingTower(tower, attributes);
       else this.fireBurstTower(tower, attributes);
       return;
@@ -616,7 +635,22 @@ export class DefenseSimulation {
     if (!selected) return;
 
     this.towerReadyAt.set(tower.cell, this.timeMs + attributes.intervalMs);
+    this.combatDiagnostics?.startShot(tower, this.timeMs);
     this.hitTowerEnemy(tower, selected, enemyPosition(selected), attributes.damage, "standard");
+  }
+
+  private observeTower(tower: Building, diagnostics: TowerCombatDiagnostics): void {
+    const biome = this.map.getBiome(tower.cell);
+    const readyAt = this.towerReadyAt.get(tower.cell) ?? 0;
+    if (tower.evolution) {
+      const attributes = evolvedTowerAttributes(tower.evolution, biome, this.towerTuning);
+      const coverage = attributes.kind === "piercing" ? this.piercingCoverage(tower.cell, attributes)
+        : buildEvolvedTowerCoverage(this.map, tower.cell, attributes);
+      diagnostics.observe(tower, { ...attributes, coverage }, this.units.values(), enemyPosition, this.timeMs, readyAt);
+    } else {
+      const attributes = towerAttributes(this.map.buildingBalance, tower.level, biome);
+      diagnostics.observe(tower, attributes, this.units.values(), enemyPosition, this.timeMs, readyAt);
+    }
   }
 
   private piercingCoverage(cell: GridPosition, attributes: PiercingTowerAttributes): PiercingCoverage {
@@ -683,7 +717,12 @@ export class DefenseSimulation {
       if (enemy === primary.enemy) continue;
       const position = enemyPosition(enemy);
       const distance = (position.x - center.x) ** 2 + (position.y - center.y) ** 2;
-      if (distance > radiusSquared || !hasTowerLineOfSight(this.map, center, position)) continue;
+      // Interpolated positions can round a mathematically exact radius slightly outward.
+      if (distance > radiusSquared + SPLASH_DISTANCE_EPSILON) continue;
+      if (!hasTowerLineOfSight(this.map, center, position)) {
+        this.combatDiagnostics?.recordOccludedSplash(tower);
+        continue;
+      }
       hits.push({ enemy, position, rawDamage: attributes.splashDamage });
     }
     this.resolveEvolvedAttack(tower, attributes.intervalMs, hits,
@@ -692,18 +731,21 @@ export class DefenseSimulation {
 
   private resolveEvolvedAttack(tower: Building, intervalMs: number, hits: readonly TowerStrike[], effect: TowerEffect): void {
     this.towerReadyAt.set(tower.cell, this.timeMs + intervalMs);
+    this.combatDiagnostics?.startShot(tower, this.timeMs);
     const enemyIds: number[] = [];
     for (const { enemy, position, rawDamage } of hits) {
-      if (this.hitTowerEnemy(tower, enemy, position, rawDamage, effect.kind)) enemyIds.push(enemy.id);
+      const role = enemy === hits[0].enemy ? "primary" : "additional";
+      if (this.hitTowerEnemy(tower, enemy, position, rawDamage, effect.kind, role)) enemyIds.push(enemy.id);
     }
     if (enemyIds.length) this.emitFor(hits[0].enemy, { type: "towerEffect", towerId: tower.id, enemyIds, effect }, tower.cell);
   }
 
   private hitTowerEnemy(tower: Building, enemy: EnemyState, to: Position, rawDamage: number,
-    kind: NonNullable<DefenseEventMetadata["towerHit"]>["kind"]): boolean {
+    kind: NonNullable<DefenseEventMetadata["towerHit"]>["kind"], role: TowerHitRole = "primary"): boolean {
     if (this.units.get(enemy.id) !== enemy || enemy.hp === 0) return false;
     const damage = Math.min(enemy.hp, rawDamage);
     enemy.hp -= damage;
+    this.combatDiagnostics?.recordHit(tower, enemy, role, to, damage, rawDamage - damage);
     this.counts.shots += 1;
     this.waveCombat.recordTowerHit(enemy.id, this.timeMs);
     this.emit({ type: "towerShot", enemyId: enemy.id, towerId: tower.id, from: tower.cell, to, damage }, {
@@ -711,6 +753,7 @@ export class DefenseSimulation {
       towerHit: { kind, rawDamage, overkill: rawDamage - damage, enemyCell: { col: Math.floor(to.x), row: Math.floor(to.y) } },
     });
     if (enemy.hp === 0 && this.units.delete(enemy.id)) {
+      this.combatDiagnostics?.recordKill(tower, enemy, this.timeMs);
       this.counts.towerKills += 1;
       this.waveCombat.resolve(enemy.id, "towerKills", this.timeMs);
       this.emitFor(enemy, { type: "towerKill", enemyId: enemy.id, towerId: tower.id }, tower.cell);

@@ -290,23 +290,24 @@ export async function readRound(page) {
       wave: Number(document.getElementById('round-wave').textContent),
       hp: Number(document.getElementById('player-hp').textContent),
       buildingContacts: Number(data.buildingContacts),
+      playerContacts: Number(data.playerContacts), towerKills: Number(data.towerKills),
       combat: JSON.parse(data.waveCombat ?? '[]'),
       economy: JSON.parse(data.waveEconomy ?? '[]'),
     };
   });
 }
 
-export async function advanceUntil(page, predicate, description, limitMs) {
+export async function advanceUntil(page, predicate, description, limitMs, stepMs = 128) {
   let state = await readRound(page);
-  for (let delay = 0; !predicate(state) && delay < limitMs; delay += 128) {
-    await page.clock.runFor(128);
+  for (let delay = 0; !predicate(state) && delay < limitMs; delay += stepMs) {
+    await page.clock.runFor(stepMs);
     state = await readRound(page);
   }
   assert.ok(predicate(state), description + '. Last state: ' + JSON.stringify(state));
   return state;
 }
 
-export async function startFirstWave(page, start) {
+export async function startFirstWave(page, start, { publicBuild = false } = {}) {
   let waiting = Math.max(0, Math.ceil(59_300 - ((await now(page)) - start)));
   while (waiting > 0) {
     const step = Math.min(12_000, waiting);
@@ -315,9 +316,14 @@ export async function startFirstWave(page, start) {
   }
   assert.equal((await readRound(page)).phase, 'preparing');
   const state = await advanceUntil(page, (round) => round.wave === 1 && round.phase === 'attacking',
-    'The challenge first wave must start at 60 seconds', 1_600);
-  assert.equal(state.combat[0].planned, 8);
-  assert.ok(Math.abs(state.combat[0].startedAtMs - 60_000) <= 96);
+    'The challenge first wave must start at 60 seconds', 1_600, publicBuild ? 16 : 128);
+  if (publicBuild) {
+    assert.deepEqual(state.combat, []);
+    assert.equal(await page.locator('#defense-stats').getAttribute('data-requested'), '8');
+  } else {
+    assert.equal(state.combat[0].planned, 8);
+    assert.ok(Math.abs(state.combat[0].startedAtMs - 60_000) <= 96);
+  }
 }
 
 async function recoverFirstWave(page) {
@@ -425,20 +431,25 @@ export async function runChallengeTowerSmoke(page, baseUrl) {
     firstThreatMs: Math.round(first.firstThreatAtMs), balance: Number(await run.cash()), playerHp: state.hp };
 }
 
-export async function runChallengeLossSmoke(page, baseUrl, experiment) {
+export async function runChallengeLossSmoke(page, baseUrl, experiment, options) {
   const seed = 12;
-  const run = await openChallenge(page, baseUrl, seed, undefined, experiment);
+  const run = await openChallenge(page, baseUrl, seed, undefined, experiment, options);
   await run.game.walkVia(cell(21, 92), cell(21, 94), cell(26, 94));
-  await startFirstWave(page, run.start);
+  await startFirstWave(page, run.start, { publicBuild: Boolean(options?.playtestUrl) });
   const loss = await advanceUntil(page, (state) => state.phase === 'lost', 'Unprotected player encounters the first wave', 4_000);
   assert.equal(loss.wave, 1);
   assert.equal(loss.hp, 0);
-  assert.equal(loss.combat[0].playerContacts, 4);
-  assert.equal(loss.combat[0].playerDamage, 4);
-  assert.equal(loss.combat[0].towerKills, 0);
+  assert.equal(loss.playerContacts, 4);
+  assert.equal(loss.towerKills, 0);
+  if (!options?.playtestUrl) {
+    assert.equal(loss.combat[0].playerContacts, 4);
+    assert.equal(loss.combat[0].playerDamage, 4);
+    assert.equal(loss.combat[0].towerKills, 0);
+  }
   assert.equal(await run.cash(), '0.0');
   assert.deepEqual(await readCardInventory(page), emptyCards);
-  return { seed, experiment, case: 'no-defense', wave: loss.wave, firstDamageMs: Math.round(loss.combat[0].firstPlayerDamageAtMs), playerHp: loss.hp };
+  return { seed, experiment, case: 'no-defense', wave: loss.wave,
+    firstDamageMs: loss.combat[0] ? Math.round(loss.combat[0].firstPlayerDamageAtMs) : undefined, playerHp: loss.hp };
 }
 
 export async function runChallengePitySmoke(page, baseUrl) {
@@ -523,32 +534,46 @@ export async function runChallengeTechnologyRelocationSmoke(page, baseUrl) {
   return { seed, oldSite, replacement: shelteredSite, attackWave: attack.wave, remainingHp };
 }
 
-export async function runChallengeVictorySmoke(page, baseUrl, build = 'control', experiment) {
+export async function runChallengeVictorySmoke(page, baseUrl, build = 'control', experiment, options) {
   const seed = 12;
-  const run = await openChallenge(page, baseUrl, seed, build, experiment);
+  const run = await openChallenge(page, baseUrl, seed, build, experiment, options);
   const gate = cell(19, 83);
   const northFacility = cell(18, 82);
   const routeStart = cell(19, 79);
-  const defendSouth = build === 'w25';
-  const openingCards = defendSouth ? ['wall', 'tower', 'tower', 'wall'] : ['wall'];
+  const reinforceGate = options?.reinforceGate === true;
+  const defendSouth = !reinforceGate && build === 'w25';
+  const fourCards = defendSouth || reinforceGate;
+  const openingCards = fourCards ? ['wall', 'tower', 'tower', 'wall'] : ['wall'];
 
   // Mine a southern strip to leave row 83 solid until we cross it.
   await run.returnTo(cell(15, 90));
-  const endCol = defendSouth ? 1 : 6;
+  const endCol = fourCards ? 1 : 6;
   for (let col = 14; col >= endCol; col -= 1) {
     const through = cell(col, 90);
     await run.mine(through);
     await run.game.walkTo(through, true);
     await run.mine(cell(col, 89));
-    if (defendSouth || col > 6) await run.mine(cell(col, 91));
+    if (fourCards || col > 6) await run.mine(cell(col, 91));
   }
-  if (defendSouth) {
+  if (fourCards) {
     for (const col of [1, 2]) {
       await run.returnTo(cell(col, 89));
       await run.mine(cell(col, 88));
     }
   }
-  assert.equal(Number(await run.cash()), technologyCost + openingCards.length * ECONOMY_PROTOTYPE.drawCost);
+  if (reinforceGate) {
+    // The fourth Combined card costs three extra currency. Mine six more five-HP tiles away from the north gate.
+    for (const col of [3, 4, 5]) {
+      await run.returnTo(cell(col, 89));
+      await run.mine(cell(col, 88));
+    }
+    for (const col of [1, 2, 3]) {
+      await run.returnTo(cell(col, 91));
+      await run.mine(cell(col, 92));
+    }
+  }
+  const startingSpend = technologyCost + openingCards.length * ECONOMY_PROTOTYPE.drawCost + (reinforceGate ? 3 : 0);
+  assert.equal(Number(await run.cash()), startingSpend);
   await run.returnTo(cell(19, 84));
   for (const target of [gate, cell(19, 82)]) {
     await run.mine(target);
@@ -573,8 +598,16 @@ export async function runChallengeVictorySmoke(page, baseUrl, build = 'control',
     const target = cell(19, row);
     await run.mine(target);
     await run.game.walkTo(target, true);
+    if (row === 81 && reinforceGate) {
+      await run.place('wall', cell(19, 82));
+      for (const col of [18, 20]) {
+        const towerSite = cell(col, row);
+        await run.mine(towerSite);
+        await run.place('tower', towerSite);
+      }
+    }
   }
-  await run.mineTo(researchCost, { allowCombatIncome: defendSouth });
+  await run.mineTo(researchCost, { allowCombatIncome: fourCards });
   await run.researchTool();
   await run.returnTo(routeStart);
   await run.game.inspect(cell(18, gate.row), '可挖地形', 'HP 5/5');
@@ -582,12 +615,17 @@ export async function runChallengeVictorySmoke(page, baseUrl, build = 'control',
   const route = findDiggablePath([northFacility]);
   const start = route.findIndex((step) => coords(step) === coords(routeStart));
   assert.ok(start > 0);
-  await followRoute(page, run.game, route.slice(start));
+  try {
+    await followRoute(page, run.game, route.slice(start));
+  } catch (error) {
+    const state = await readRound(page);
+    throw new Error(`Expedition route stopped in wave ${state.wave}, phase ${state.phase}, HP ${state.hp}: ${error.message}`, { cause: error });
+  }
   assert.deepEqual(await run.game.position(), GENERATED_GOAL);
   const victory = await readRound(page);
   assert.equal(victory.phase, 'won');
   assert.ok(victory.wave > 0, 'The expedition must win under real attack timing');
   assert.ok(victory.hp > 0);
   return { seed, profile: build, experiment, hp: victory.hp, wave: victory.wave, gate, routeSteps: route.length - 1,
-    openingCards, towerKills: victory.combat.reduce((sum, wave) => sum + wave.towerKills, 0) };
+    openingCards, towerKills: victory.towerKills, reinforcedGate: reinforceGate };
 }

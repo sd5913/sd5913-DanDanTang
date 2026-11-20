@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { GENERATED_SPAWN } from '../src/generated-map.ts';
 import { readCardInventory } from './browser-card-feedback.mjs';
-import { advanceUntil, openChallenge } from './browser-challenge.mjs';
+import { advanceUntil, openChallenge, runChallengeLossSmoke, runChallengeVictorySmoke, startFirstWave } from './browser-challenge.mjs';
 import { preparePaidEvolvedTower } from './browser-tower-evolution.mjs';
 
 const experimentControls = ['#round-difficulty', '#challenge-balance', '#midgame-experiment'];
@@ -146,10 +146,49 @@ export async function runPlaytestCombinedEconomySmoke(page, baseUrl) {
   assert.ok(beforeNinth && withNinth, 'Capture the second cohort balance on both sides of the ninth kill');
   assert.equal(beforeNinth.balance, 16 + 2 * beforeNinth.kills);
   // One piercing attack can skip over kill 8 in the UI, so account for the full-price kills in that shot.
-  assert.equal(withNinth.kills, 9);
-  const ninthReward = withNinth.balance - beforeNinth.balance - 2 * (8 - beforeNinth.kills);
-  assert.equal(ninthReward, 1);
-  assert.equal(withNinth.balance, 33);
+  const reducedKills = withNinth.kills - 8;
+  const reducedReward = withNinth.balance - beforeNinth.balance - 2 * (8 - beforeNinth.kills);
+  assert.equal(reducedReward, reducedKills);
+  assert.equal(withNinth.balance, 32 + reducedKills);
+  const ninthReward = reducedReward / reducedKills;
   assert.equal(await combat.getAttribute('data-wave-combat'), null);
-  return { seed: 515, evolution: 'piercing', firstWaveKills: 8, firstWaveBalance: 16, beforeNinth, withNinth, ninthReward };
+  assert.equal(await run.maker.textContent(), '制造卡牌（6 经济）');
+  const card = await run.draw();
+  const reuse = run.released[0];
+  await run.returnTo({ col: reuse.col, row: reuse.row + 1 });
+  await run.place(card, reuse);
+  await run.game.inspect(reuse, '空地');
+  await page.clock.runFor(32);
+  assert.notEqual(await run.building.textContent(), '—');
+  return { seed: 515, evolution: 'piercing', intervalMs: run.attack.intervalMs,
+    firstWaveKills: 8, firstWaveBalance: 16, beforeNinth, withNinth, ninthReward, reused: reuse, card };
 }
+
+export async function runPlaytestLiveRepathSmoke(page, baseUrl) {
+  const run = await preparePaidEvolvedTower(page, baseUrl, 'piercing', { playtest: true, checkRepath: true });
+  return { seed: 515, intervalMs: run.attack.intervalMs, searches: run.searches, released: run.released };
+}
+
+export async function runPlaytestBurstSmoke(page, baseUrl) {
+  const run = await preparePaidEvolvedTower(page, baseUrl, 'burst', { playtest: true });
+  const combat = page.locator('#defense-stats');
+  assert.equal(await combat.getAttribute('data-tower-effects'), null);
+  assert.equal(await run.maker.textContent(), '制造卡牌（6 经济）');
+  await startFirstWave(page, run.start, { publicBuild: true });
+  let previousHits = Number(await combat.getAttribute('data-shots'));
+  let groupedHits = 0;
+  for (let elapsed = 0; elapsed < 4_000 && groupedHits < 2; elapsed += 32) {
+    await page.clock.runFor(32);
+    const hits = Number(await combat.getAttribute('data-shots'));
+    groupedHits = Math.max(groupedHits, hits - previousHits);
+    previousHits = hits;
+  }
+  // There is exactly one tower. A sample shorter than its interval cannot contain two fires.
+  assert.ok(groupedHits >= 2, 'The paid Burst Tower must hit multiple moving enemies in one attack');
+  return { seed: 515, evolution: 'burst', radius: run.attack.radius, groupedHits };
+}
+
+export const runPlaytestVictorySmoke = (page, url) => runChallengeVictorySmoke(page, url, 'w25', 'combined', {
+  playtestUrl: '/', reinforceGate: true,
+});
+export const runPlaytestLossSmoke = (page, url) => runChallengeLossSmoke(page, url, 'combined', { playtestUrl: '/' });

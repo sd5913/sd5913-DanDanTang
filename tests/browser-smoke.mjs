@@ -42,9 +42,12 @@ try {
   try {
     const mode = development ? 'dev regression' : 'compiled regression';
     if (playtest) {
-      const { runPlaytestSmoke, runPlaytestCombinedEconomySmoke } = await import('./browser-playtest.mjs');
+      const { runPlaytestSmoke, runPlaytestCombinedEconomySmoke, runPlaytestBurstSmoke,
+        runPlaytestLiveRepathSmoke, runPlaytestVictorySmoke, runPlaytestLossSmoke } = await import('./browser-playtest.mjs');
       for (const [name, run] of [
-        ['unified playtest', runPlaytestSmoke], ['unified economy', runPlaytestCombinedEconomySmoke],
+        ['unified playtest', runPlaytestSmoke], ['paid piercing, economy and tile reuse', runPlaytestCombinedEconomySmoke],
+        ['paid burst', runPlaytestBurstSmoke], ['live repath', runPlaytestLiveRepathSmoke],
+        ['normal victory', runPlaytestVictorySmoke], ['normal loss', runPlaytestLossSmoke],
       ]) {
         const result = await withSmokePage(browser, { width: 1280, height: 900 }, (page) => run(page, url));
         console.log(`Edge smoke (production, ${name}): passed; ${JSON.stringify(result)}; no browser errors.`);
