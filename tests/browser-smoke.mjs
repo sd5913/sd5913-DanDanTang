@@ -6,6 +6,7 @@ import { MINING_CONFIG } from '../src/mining-config.ts';
 import { TerrainMap } from '../src/terrain.ts';
 import { runBuildDebugIsolationSmoke, runBuildRangeSmoke } from './browser-build-range.mjs';
 import { runCardFeedbackSmoke, runDestroyedTechFeedbackSmoke } from './browser-card-feedback.mjs';
+import { runChallengeLossSmoke, runChallengePitySmoke, runChallengeTowerSmoke, runChallengeWallSmoke } from './browser-challenge.mjs';
 import { runDenseMapSmoke } from './browser-dense-map.mjs';
 import { runDefenseSmoke } from './browser-defense.mjs';
 import { runBiomeFogSmoke, runExpeditionSmoke, runResearchSmoke, runStrataSeedSmoke } from './browser-expedition.mjs';
@@ -41,6 +42,8 @@ try {
         (page) => runSingleMapSmoke(page, url + '/?map=single', { directionalOnly: true }));
       console.log(`Edge smoke (${mode}, directional mining): passed; amber Canvas outlines, locked strikes, stationary-pointer turns, key order and cancellation, cooldown, release, and blur verified; no browser errors.`);
       await runWideMiningPreviewBrowserSmoke(browser, url, mode);
+    } else if (process.argv.includes('--challenge')) {
+      await runChallengeBrowserSmoke(browser, url, mode, true);
     } else if (process.argv.includes('--pressure-outcomes')) {
       await runPressureOutcomesBrowserSmoke(browser, url, mode, true);
     } else if (process.argv.includes('--pressure-alerts')) {
@@ -69,12 +72,24 @@ try {
       await runPressureOutcomesBrowserSmoke(browser, url, mode, process.argv.includes('--normal-round'));
       await runCardFeedbackBrowserSmoke(browser, url, mode);
       await runBuildRangeBrowserSmoke(browser, url, mode);
+      await runChallengeBrowserSmoke(browser, url, mode, false);
     }
   } finally {
     await browser.close();
   }
 } finally {
   await server.close();
+}
+
+async function runChallengeBrowserSmoke(browser, url, mode, full) {
+  const viewport = { width: 1280, height: 900 };
+  const cases = full
+    ? [runChallengeWallSmoke, runChallengeTowerSmoke, runChallengeLossSmoke, runChallengePitySmoke]
+    : [runChallengeWallSmoke];
+  for (const run of cases) {
+    const result = await withSmokePage(browser, viewport, (page) => run(page, url));
+    console.log(`Edge smoke (${mode}, challenge): passed; ${JSON.stringify(result)}; no browser errors.`);
+  }
 }
 
 async function runPressureProfilesBrowserSmoke(browser, url, mode, includeNormalTiming) {

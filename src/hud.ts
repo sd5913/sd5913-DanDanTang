@@ -77,7 +77,7 @@ export class DebugHud {
     writeStatus(this.grid, visible ? "显示" : "隐藏");
   }
 
-  showDig(strike?: MiningStrike): void {
+  showDig(strike?: MiningStrike, miningIncome = 0): void {
     if (!strike) {
       this.dig.dataset.outcome = "idle";
       writeStatus(this.dig, "等待挖掘");
@@ -93,7 +93,8 @@ export class DebugHud {
 
     this.dig.dataset.outcome = result.cleared ? "dug" : "hit";
     const message = result.cleared ? "挖掘成功" : `命中 · -${result.damage} HP · 剩余 ${result.hp} HP`;
-    writeStatus(this.dig, `${message} · ${coordinates(target)}`);
+    const income = miningIncome > 0 ? ` · +${miningIncome.toFixed(1)} 经济` : "";
+    writeStatus(this.dig, `${message} · ${coordinates(target)}${income}`);
   }
 
   showGoal(reached: boolean, expedition = false): void {

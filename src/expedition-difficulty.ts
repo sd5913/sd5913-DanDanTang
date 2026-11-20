@@ -1,4 +1,6 @@
-export type DifficultyId = "baseline" | "a" | "b";
+import type { CardKind } from "./expedition-economy.ts";
+
+export type DifficultyId = "baseline" | "a" | "b" | "challenge";
 export type ExpeditionStage = 0 | 1 | 2;
 
 export interface EnemyStrength {
@@ -20,12 +22,20 @@ interface WaveSchedule {
   readonly cap: number;
 }
 
+export interface DifficultyEconomy {
+  readonly initialBalance: number;
+  readonly initialCards: Readonly<Record<CardKind, number>>;
+  readonly miningIncomeTenthsPerHp: number;
+  readonly guaranteedDefenseDraw: number;
+}
+
 interface DifficultyProfile {
   readonly label: string;
   readonly normal: WaveTiming;
   readonly fast: WaveTiming;
   readonly stages: readonly [EnemyStrength, EnemyStrength, EnemyStrength];
   readonly schedule?: WaveSchedule;
+  readonly economy: DifficultyEconomy;
 }
 
 export const PROTOTYPE_ONLY = Object.freeze({
@@ -46,6 +56,18 @@ const fasterFast = Object.freeze({ ...fasterNormal, preparingMs: 2_500, recoveri
 const fasterSchedule = Object.freeze({
   initial: Object.freeze([10, 16, 24, 34, 46, 60]), growth: 14, cap: 120,
 });
+const standardEconomy = Object.freeze({
+  initialBalance: 8, initialCards: Object.freeze({ wall: 4, tower: 2, economy: 1 }),
+  miningIncomeTenthsPerHp: 0, guaranteedDefenseDraw: 0,
+});
+const challengeEconomy = Object.freeze({
+  initialBalance: 0, initialCards: Object.freeze({ wall: 0, tower: 0, economy: 0 }),
+  miningIncomeTenthsPerHp: 1, guaranteedDefenseDraw: 3,
+});
+const challengeNormal = Object.freeze({ ...fasterNormal, preparingMs: 60_000, recoveringMs: 20_000 });
+const challengeSchedule = Object.freeze({
+  ...fasterSchedule, initial: Object.freeze([8, ...fasterSchedule.initial.slice(1)]),
+});
 const strongerStages = Object.freeze([
   Object.freeze({ ...PROTOTYPE_ONLY.profiles[0], enemyHp: 4 }),
   Object.freeze({ ...PROTOTYPE_ONLY.profiles[1], enemyHp: 7 }),
@@ -56,12 +78,19 @@ const strongerStages = Object.freeze([
 export const DIFFICULTY_PROFILES: Readonly<Record<DifficultyId, DifficultyProfile>> = Object.freeze({
   baseline: Object.freeze({
     label: "基线", normal: PROTOTYPE_ONLY.normal, fast: PROTOTYPE_ONLY.fast, stages: PROTOTYPE_ONLY.profiles,
+    economy: standardEconomy,
   }),
   a: Object.freeze({
     label: "A · 加快波次", normal: fasterNormal, fast: fasterFast, stages: PROTOTYPE_ONLY.profiles, schedule: fasterSchedule,
+    economy: standardEconomy,
   }),
   b: Object.freeze({
     label: "B · 加快波次与强化敌人", normal: fasterNormal, fast: fasterFast, stages: strongerStages, schedule: fasterSchedule,
+    economy: standardEconomy,
+  }),
+  challenge: Object.freeze({
+    label: "挑战模式：从零开始", normal: challengeNormal, fast: fasterFast, stages: strongerStages,
+    schedule: challengeSchedule, economy: challengeEconomy,
   }),
 });
 

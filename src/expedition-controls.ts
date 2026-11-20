@@ -28,6 +28,8 @@ const PHASE_NAMES: Record<ExpeditionPhase, string> = {
 };
 
 const CARD_DRAW_FEEDBACK_MS = 1_750;
+const CHALLENGE_OPENING_HINT = "挖掘地形获得经济，使用科技设施制造建筑卡。";
+const FIRST_CARD_READY_HINT = "已可制造第一张建筑卡";
 const CARD_SYMBOLS: Record<CardKind, string> = { wall: "▦", tower: "▲", economy: "◆" };
 const DRAW_FAILURE_LABELS: Record<CardDrawFailure | "round-ended", string> = {
   "technology-destroyed": "科技设施已损毁",
@@ -59,6 +61,8 @@ interface ExpeditionActions {
 export class ExpeditionControls {
   readonly economy: ExpeditionEconomy;
   private readonly checkPlacement: ExpeditionActions["checkPlacement"];
+  private readonly challenge: boolean;
+  private firstDrawReadyShown = false;
   private selected?: CardKind;
   private finished = false;
   private recentDraw?: { readonly card: CardKind; readonly timer: number };
@@ -92,7 +96,8 @@ export class ExpeditionControls {
   constructor(
     scene: Phaser.Scene, map: TerrainMap, seed: number, round: ExpeditionRound, actions: ExpeditionActions,
   ) {
-    this.economy = new ExpeditionEconomy(map, seed);
+    this.economy = new ExpeditionEconomy(map, seed, undefined, round.difficulty);
+    this.challenge = round.difficulty === "challenge";
     this.checkPlacement = actions.checkPlacement;
     const events = new AbortController();
     const options = { signal: events.signal };
@@ -102,12 +107,16 @@ export class ExpeditionControls {
     roundPanel.hidden = false;
     field("expedition-debug").hidden = !actions.debug;
     this.showRound(round);
+    if (this.challenge) this.showFeedback(CHALLENGE_OPENING_HINT);
     this.makeCard.textContent = `制造卡牌（${ECONOMY_PROTOTYPE.drawCost} 经济）`;
     this.research.textContent = `研发 Lv.2 工具（${TECHNOLOGY_PROTOTYPE.researchCost} 经济）`;
     this.makeCard.addEventListener("click", () => {
       const before = this.economy.cards;
       const card = this.finished ? undefined : this.economy.drawCard();
-      if (card) this.showDrawFeedback(card, before[card], this.economy.cards[card]);
+      if (card) {
+        this.showDrawFeedback(card, before[card], this.economy.cards[card]);
+        if (this.status.textContent === FIRST_CARD_READY_HINT) this.showFeedback("");
+      }
       this.refresh();
     }, options);
     this.research.addEventListener("click", () => {
@@ -219,14 +228,16 @@ export class ExpeditionControls {
     write(this.wave, String(wave));
     write(this.pressure, String(pressure));
     write(this.stage, `${stage + 1} · ${round.strength.enemyHp} HP`);
-    write(this.timeLabel, this.finished ? "剩余时间" : upcoming ? "下波倒计时" : "进攻剩余");
+    const waitingLabel = this.challenge && phase === "preparing" ? "首波倒计时" : "下波倒计时";
+    write(this.timeLabel, this.finished ? "剩余时间" : upcoming ? waitingLabel : "进攻剩余");
     write(this.time, this.finished ? "—" : `${Math.ceil(remainingMs / 1000)} 秒`);
     write(this.nextCount, upcoming ? `${upcoming.count} 只` : "—");
   }
 
   refresh(): void {
     if (!this.selected) this.previewPlacement(null);
-    write(this.balance, String(this.economy.balance));
+    const { toolLevel, hasTechnology, balance } = this.economy;
+    write(this.balance, this.challenge ? balance.toFixed(1) : String(balance));
     const cards = this.economy.cards;
     for (const [kind, button] of this.cards) {
       const count = String(cards[kind]);
@@ -243,7 +254,10 @@ export class ExpeditionControls {
     const canDraw = drawFailure === undefined;
     if (this.makeCard.disabled === canDraw) this.makeCard.disabled = !canDraw;
     write(this.drawReason, drawFailure ? DRAW_FAILURE_LABELS[drawFailure] : "");
-    const { toolLevel, hasTechnology, balance } = this.economy;
+    if (this.challenge && canDraw && !this.firstDrawReadyShown) {
+      this.firstDrawReadyShown = true;
+      this.showFeedback(FIRST_CARD_READY_HINT);
+    }
     write(this.tool, `Lv.${toolLevel}`);
     const canResearch = !this.finished && toolLevel < 2 && hasTechnology && balance >= TECHNOLOGY_PROTOTYPE.researchCost;
     if (this.research.disabled === canResearch) this.research.disabled = !canResearch;
@@ -278,11 +292,12 @@ export class ExpeditionControls {
 
   reset(): void {
     this.economy.reset();
+    this.firstDrawReadyShown = false;
     this.selected = undefined;
     this.clearDrawFeedback();
     for (const card of CARD_KINDS) this.drawnCards[card] = 0;
     write(this.drawSummary, "");
-    this.showFeedback("请选择建筑卡，或按住左键挖掘");
+    this.showFeedback(this.challenge ? CHALLENGE_OPENING_HINT : "请选择建筑卡，或按住左键挖掘");
     this.refresh();
   }
 }

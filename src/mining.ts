@@ -91,20 +91,25 @@ export class MiningSession {
     }
 
     let result: DigResult | undefined;
+    let damage = 0;
     // Keep the original cadence across short stalls and stop at the clearing strike.
     while (nowMs >= this.nextAttackMs) {
-      result = this.map.applyDigDamage(from, target, this.tool.damage, toolLevel);
-      if (!result.effective) {
+      const strike = this.map.applyDigDamage(from, target, this.tool.damage, toolLevel);
+      if (!strike.effective) {
         this.stop();
+        result ??= strike;
         break;
       }
+      damage += strike.damage;
+      result = strike;
       this.nextAttackMs += this.tool.attackIntervalMs;
-      if (result.cleared) {
+      if (strike.cleared) {
         this.active = { target: null, lastUpdateMs: nowMs };
         break;
       }
     }
 
+    if (result?.effective && damage > result.damage) result = { ...result, damage };
     if (result) return { target, result };
   }
 

@@ -1,5 +1,7 @@
 import type { Building } from "./buildings.ts";
 import { BIOME_PROTOTYPE } from "./biome-effects.ts";
+import { DIFFICULTY_PROFILES } from "./expedition-difficulty.ts";
+import type { DifficultyEconomy, DifficultyId } from "./expedition-difficulty.ts";
 import type { DefenseEvent } from "./defense-simulation.ts";
 import type { GridPosition, TerrainMap } from "./terrain.ts";
 
@@ -15,15 +17,29 @@ export interface EconomyTotals {
   readonly cardsMade: number;
   readonly cardSpend: number;
   readonly researchSpend: number;
+  readonly miningIncome?: number;
 }
 
 function newTotals() {
-  return { killIncome: 0, productionIncome: 0, cardsMade: 0, cardSpend: 0, researchSpend: 0 };
+  return {
+    killIncomeTenths: 0, productionIncomeTenths: 0, cardsMade: 0,
+    cardSpendTenths: 0, researchSpendTenths: 0, miningIncomeTenths: 0,
+  };
+}
+
+const TENTHS_PER_COIN = 10;
+
+export function toEconomyTenths(coins: number): number {
+  return Math.round(coins * TENTHS_PER_COIN);
+}
+
+export function fromEconomyTenths(tenths: number): number {
+  return tenths / TENTHS_PER_COIN;
 }
 
 export const ECONOMY_PROTOTYPE = Object.freeze({
-  initialBalance: 8,
-  initialCards: Object.freeze({ wall: 4, tower: 2, economy: 1 }),
+  initialBalance: DIFFICULTY_PROFILES.baseline.economy.initialBalance,
+  initialCards: DIFFICULTY_PROFILES.baseline.economy.initialCards,
   productionIntervalMs: 4_000,
   productionAmount: 1,
   towerKillReward: 2,
@@ -36,32 +52,58 @@ export const ECONOMY_PROTOTYPE = Object.freeze({
 export const TECHNOLOGY_PROTOTYPE = Object.freeze({ researchCost: 10 });
 
 const DRAW_SALT = 0x9e37_79b9;
+const DEFENSE_DRAW_SALT = 0xa511_e9b3;
 const DRAW_WEIGHT = CARD_KINDS.reduce((total, kind) => total + ECONOMY_PROTOTYPE.drawWeights[kind], 0);
+const DRAW_COST_TENTHS = toEconomyTenths(ECONOMY_PROTOTYPE.drawCost);
+const RESEARCH_COST_TENTHS = toEconomyTenths(TECHNOLOGY_PROTOTYPE.researchCost);
+
+function nextDrawState(state: number): number {
+  return (Math.imul(state, 1_664_525) + 1_013_904_223) >>> 0;
+}
 
 export class ExpeditionEconomy {
   readonly #map: TerrainMap;
   readonly #initialDrawState: number;
+  readonly #initialDefenseDrawState: number;
   readonly #technologyCell: GridPosition;
+  readonly #rules: DifficultyEconomy;
   #toolLevel: 1 | 2 = 1;
-  #balance: number = ECONOMY_PROTOTYPE.initialBalance;
+  #balanceTenths = 0;
   #cards: CardCounts = ECONOMY_PROTOTYPE.initialCards;
   #drawState = 0;
+  #hasDrawnDefense = false;
   #productionMs = new WeakMap<GridPosition, number>();
   readonly #rewardedKills = new Set<number>();
   #totals = newTotals();
 
-  constructor(map: TerrainMap, seed: number, technologyCell: GridPosition = ECONOMY_PROTOTYPE.technologyCell) {
+  constructor(
+    map: TerrainMap, seed: number, technologyCell: GridPosition = ECONOMY_PROTOTYPE.technologyCell,
+    difficulty: DifficultyId = "baseline",
+  ) {
     this.#map = map;
+    this.#rules = DIFFICULTY_PROFILES[difficulty].economy;
     this.#initialDrawState = (seed ^ DRAW_SALT) >>> 0;
+    this.#initialDefenseDrawState = (seed ^ DEFENSE_DRAW_SALT) >>> 0;
     this.#technologyCell = Object.freeze({ ...technologyCell });
     this.reset();
   }
 
   get balance(): number {
-    return this.#balance;
+    return fromEconomyTenths(this.#balanceTenths);
   }
 
-  get totals(): EconomyTotals { return { balance: this.#balance, ...this.#totals }; }
+  get totals(): EconomyTotals {
+    return {
+      balance: this.balance,
+      killIncome: fromEconomyTenths(this.#totals.killIncomeTenths),
+      productionIncome: fromEconomyTenths(this.#totals.productionIncomeTenths),
+      cardsMade: this.#totals.cardsMade,
+      cardSpend: fromEconomyTenths(this.#totals.cardSpendTenths),
+      researchSpend: fromEconomyTenths(this.#totals.researchSpendTenths),
+      ...(this.#rules.miningIncomeTenthsPerHp > 0
+        ? { miningIncome: fromEconomyTenths(this.#totals.miningIncomeTenths) } : {}),
+    };
+  }
 
   get cards(): CardCounts {
     return this.#cards;
@@ -83,9 +125,19 @@ export class ExpeditionEconomy {
     if (event.type !== "towerKill" || this.#rewardedKills.has(event.enemyId)) return 0;
     this.#rewardedKills.add(event.enemyId);
     const credit = ECONOMY_PROTOTYPE.towerKillReward;
-    this.#balance += credit;
-    this.#totals.killIncome += credit;
+    const creditTenths = toEconomyTenths(credit);
+    this.#balanceTenths += creditTenths;
+    this.#totals.killIncomeTenths += creditTenths;
     return credit;
+  }
+
+  creditMiningDamage(actualDamage: number): number {
+    if (!Number.isSafeInteger(actualDamage) || actualDamage <= 0) return 0;
+    const creditTenths = actualDamage * this.#rules.miningIncomeTenthsPerHp;
+    if (!Number.isSafeInteger(creditTenths) || creditTenths <= 0) return 0;
+    this.#balanceTenths += creditTenths;
+    this.#totals.miningIncomeTenths += creditTenths;
+    return fromEconomyTenths(creditTenths);
   }
 
   advance(deltaMs: number): void {
@@ -96,30 +148,36 @@ export class ExpeditionEconomy {
       const interval = biome === "plain" ? BIOME_PROTOTYPE.plainProductionMs : biome === "highland"
         ? BIOME_PROTOTYPE.highlandProductionMs : ECONOMY_PROTOTYPE.productionIntervalMs;
       const elapsed = (this.#productionMs.get(building.cell) ?? 0) + deltaMs;
-      const credit = Math.floor(elapsed / interval) * ECONOMY_PROTOTYPE.productionAmount;
-      this.#balance += credit;
-      this.#totals.productionIncome += credit;
+      const creditTenths = Math.floor(elapsed / interval) * toEconomyTenths(ECONOMY_PROTOTYPE.productionAmount);
+      this.#balanceTenths += creditTenths;
+      this.#totals.productionIncomeTenths += creditTenths;
       this.#productionMs.set(building.cell, elapsed % interval);
     }
   }
 
   get drawFailure(): CardDrawFailure | undefined {
     if (!this.hasTechnology) return "technology-destroyed";
-    return this.#balance < ECONOMY_PROTOTYPE.drawCost ? "insufficient-funds" : undefined;
+    return this.#balanceTenths < DRAW_COST_TENTHS ? "insufficient-funds" : undefined;
   }
 
   drawCard(): CardKind | undefined {
     if (this.drawFailure) return undefined;
-    this.#drawState = (Math.imul(this.#drawState, 1_664_525) + 1_013_904_223) >>> 0;
+    // Each paid draw advances the regular stream, including a guaranteed result.
+    this.#drawState = nextDrawState(this.#drawState);
     let ticket = Math.floor(this.#drawState / 0x1_0000_0000 * DRAW_WEIGHT);
     for (const kind of CARD_KINDS) {
       ticket -= ECONOMY_PROTOTYPE.drawWeights[kind];
       if (ticket >= 0) continue;
-      this.#balance -= ECONOMY_PROTOTYPE.drawCost;
+      const guarantee = this.#totals.cardsMade + 1 === this.#rules.guaranteedDefenseDraw && !this.#hasDrawnDefense;
+      const granted = guarantee
+        ? (nextDrawState(this.#initialDefenseDrawState) < 0x8000_0000 ? "wall" : "tower")
+        : kind;
+      this.#balanceTenths -= DRAW_COST_TENTHS;
       this.#totals.cardsMade += 1;
-      this.#totals.cardSpend += ECONOMY_PROTOTYPE.drawCost;
-      this.updateCards(kind, 1);
-      return kind;
+      this.#totals.cardSpendTenths += DRAW_COST_TENTHS;
+      this.#hasDrawnDefense ||= granted === "wall" || granted === "tower";
+      this.updateCards(granted, 1);
+      return granted;
     }
     return undefined;
   }
@@ -133,10 +191,9 @@ export class ExpeditionEconomy {
   }
 
   researchTool(): boolean {
-    const { researchCost } = TECHNOLOGY_PROTOTYPE;
-    if (this.#toolLevel === 2 || !this.hasTechnology || this.#balance < researchCost) return false;
-    this.#balance -= researchCost;
-    this.#totals.researchSpend += researchCost;
+    if (this.#toolLevel === 2 || !this.hasTechnology || this.#balanceTenths < RESEARCH_COST_TENTHS) return false;
+    this.#balanceTenths -= RESEARCH_COST_TENTHS;
+    this.#totals.researchSpendTenths += RESEARCH_COST_TENTHS;
     this.#toolLevel = 2;
     return true;
   }
@@ -151,9 +208,10 @@ export class ExpeditionEconomy {
       throw new Error(`Cannot place the technology facility at (${cell.col}, ${cell.row})`);
     }
     this.#toolLevel = 1;
-    this.#balance = ECONOMY_PROTOTYPE.initialBalance;
-    this.#cards = ECONOMY_PROTOTYPE.initialCards;
+    this.#balanceTenths = toEconomyTenths(this.#rules.initialBalance);
+    this.#cards = this.#rules.initialCards;
     this.#drawState = this.#initialDrawState;
+    this.#hasDrawnDefense = false;
     this.#productionMs = new WeakMap();
     this.#rewardedKills.clear();
     this.#totals = newTotals();

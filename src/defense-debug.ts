@@ -240,6 +240,14 @@ export class DefenseDebug {
 
   get toolLevel(): 1 | 2 { return this.expedition?.economy.toolLevel ?? 1; }
 
+  creditMiningDamage(damage: number): number {
+    const expedition = this.expedition;
+    if (!expedition) return 0;
+    const income = expedition.economy.creditMiningDamage(damage);
+    if (income > 0) expedition.refresh();
+    return income;
+  }
+
   showBiome(biome: BiomeId): void { this.expedition?.showBiome(biome); }
 
   private readonly spawn = (): void => {

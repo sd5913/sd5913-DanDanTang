@@ -287,13 +287,15 @@ export class GridScene extends Phaser.Scene {
 
   private showStrike(strike: MiningStrike): void {
     const { target, result } = strike;
+    let income = 0;
     if (result.effective) {
+      income = this.defense?.creditMiningDamage(result.damage) ?? 0;
       this.boardRenderer.redrawCell(this.terrain, target);
       if (this.hovered?.col === target.col && this.hovered.row === target.row) {
         this.updateHover(target);
       }
     }
-    this.hud.showDig(strike);
+    this.hud.showDig(strike, income);
   }
 
   private updatePlayer(): void {
