@@ -2,6 +2,7 @@ import Phaser from "phaser";
 import { DefenseDebug } from "./defense-debug.ts";
 import type { DefenseScenario } from "./defense-debug.ts";
 import { DebugHud } from "./hud.ts";
+import { MINING_CONFIG } from "./mining-config.ts";
 import { MiningSession } from "./mining.ts";
 import type { MiningStrike } from "./mining.ts";
 import { Player, TILE_SIZE, worldToCell } from "./player.ts";
@@ -37,7 +38,7 @@ export class GridScene extends Phaser.Scene {
     super("grid");
     this.terrain = new TerrainMap(layout, wide ? {} : { autoMerge: false });
     this.player = new Player(this.terrain.spawn);
-    this.mining = new MiningSession(this.terrain);
+    this.mining = new MiningSession(this.terrain, MINING_CONFIG, () => this.defense?.toolLevel ?? 1);
     this.defenseOptions = defenseOptions;
     this.wide = wide;
   }

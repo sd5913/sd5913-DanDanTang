@@ -22,29 +22,36 @@ interface ActiveMining {
 export class MiningSession {
   private readonly map: Pick<TerrainMap, "getDigFailure" | "applyDigDamage">;
   private readonly tool: MiningTool;
+  private readonly getToolLevel: () => number;
   private active?: ActiveMining;
   private nextAttackMs = -Infinity;
 
-  constructor(map: Pick<TerrainMap, "getDigFailure" | "applyDigDamage">, tool: MiningTool = MINING_CONFIG) {
+  constructor(
+    map: Pick<TerrainMap, "getDigFailure" | "applyDigDamage">,
+    tool: MiningTool = MINING_CONFIG,
+    getToolLevel: () => number = () => 1,
+  ) {
     if (!Number.isFinite(tool.attackIntervalMs) || tool.attackIntervalMs <= 0) {
       throw new RangeError("The mining attack interval must be positive and finite");
     }
     this.map = map;
     this.tool = { damage: tool.damage, attackIntervalMs: tool.attackIntervalMs };
+    this.getToolLevel = getToolLevel;
   }
 
   begin(from: GridPosition, { col, row }: GridPosition, nowMs: number): MiningStrike | undefined {
     const target = Object.freeze({ col, row });
     this.stop();
     if (!Number.isFinite(nowMs)) return;
+    const toolLevel = this.getToolLevel();
 
     // A legal press during cooldown locks its target without spending a strike.
-    if (nowMs < this.nextAttackMs && !this.map.getDigFailure(from, target)) {
+    if (nowMs < this.nextAttackMs && !this.map.getDigFailure(from, target, toolLevel)) {
       this.active = { target, lastUpdateMs: nowMs };
       return;
     }
 
-    const result = this.map.applyDigDamage(from, target, this.tool.damage);
+    const result = this.map.applyDigDamage(from, target, this.tool.damage, toolLevel);
     if (result.effective) {
       this.nextAttackMs = nowMs + this.tool.attackIntervalMs;
       this.active = { target: result.cleared ? null : target, lastUpdateMs: nowMs };
@@ -64,11 +71,12 @@ export class MiningSession {
     active.lastUpdateMs = nowMs;
 
     const { target } = active;
+    const toolLevel = this.getToolLevel();
     if (!target) {
-      if (nowMs < this.nextAttackMs || !aimedCell || this.map.getDigFailure(from, aimedCell)) return;
+      if (nowMs < this.nextAttackMs || !aimedCell || this.map.getDigFailure(from, aimedCell, toolLevel)) return;
       return this.begin(from, aimedCell, nowMs);
     }
-    if (this.map.getDigFailure(from, target)) {
+    if (this.map.getDigFailure(from, target, toolLevel)) {
       this.stop();
       return;
     }
@@ -76,7 +84,7 @@ export class MiningSession {
     let result: DigResult | undefined;
     // Keep the original cadence across short stalls and stop at the clearing strike.
     while (nowMs >= this.nextAttackMs) {
-      result = this.map.applyDigDamage(from, target, this.tool.damage);
+      result = this.map.applyDigDamage(from, target, this.tool.damage, toolLevel);
       if (!result.effective) {
         this.stop();
         break;

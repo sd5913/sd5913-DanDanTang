@@ -6,7 +6,7 @@ import { MINING_CONFIG } from '../src/mining-config.ts';
 import { TerrainMap } from '../src/terrain.ts';
 import { runDenseMapSmoke } from './browser-dense-map.mjs';
 import { runDefenseSmoke } from './browser-defense.mjs';
-import { runExpeditionSmoke } from './browser-expedition.mjs';
+import { runExpeditionSmoke, runResearchSmoke } from './browser-expedition.mjs';
 import { runFix02MapSmoke, runFix02DefenseSmoke, runFix02RoundSmoke, runSynthesisSmoke } from './browser-fix02.mjs';
 import { runLongMapSmoke } from './browser-long-map.mjs';
 
@@ -62,6 +62,10 @@ try {
     await withSmokePage(browser, { width: 1280, height: 900 },
       (page) => runExpeditionSmoke(page, `${url}/?mode=play&seed=12`));
     console.log(`Edge smoke (${mode}, P0-D expedition): passed; card placement and synthesis, separate controls, timed production, seeded manufacture, tower reward, and round reset verified; no browser errors.`);
+
+    await withSmokePage(browser, { width: 1280, height: 900 },
+      (page) => runResearchSmoke(page, `${url}/?mode=play&seed=12`));
+    console.log(`Edge smoke (${mode}, P0-E research): passed; production-funded research, tier gate, damage persistence, seam crossing, and same-seed reset verified; no browser errors.`);
   } finally {
     await browser.close();
   }

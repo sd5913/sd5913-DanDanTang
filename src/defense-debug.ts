@@ -56,7 +56,10 @@ export class DefenseDebug {
     this.graphics = scene.add.graphics().setDepth(1.5);
     this.labelLayer = scene.add.layer().setDepth(2.5);
     if (scenario.worldSeed !== undefined) {
-      this.expedition = new ExpeditionControls(scene, map, scenario.worldSeed, () => this.spawnPrototypeEnemy());
+      this.expedition = new ExpeditionControls(scene, map, scenario.worldSeed, {
+        spawnEnemy: () => this.spawnPrototypeEnemy(),
+        canRebuild: (cell) => this.canPlaceAt(cell),
+      });
       return;
     }
     this.keys = scene.input.keyboard!.addKeys("B,T,X", false) as typeof this.keys;
@@ -155,6 +158,8 @@ export class DefenseDebug {
     this.expedition.placeSelected(cell, this.canPlaceAt(cell));
     return true;
   }
+
+  get toolLevel(): 1 | 2 { return this.expedition?.economy.toolLevel ?? 1; }
 
   private readonly spawn = (): void => {
     const count = this.simulation.requestSpawn(Number(this.count.value), Number(this.damage.value));

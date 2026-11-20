@@ -18,6 +18,8 @@ export const ECONOMY_PROTOTYPE = Object.freeze({
   technologyCell: Object.freeze({ col: 17, row: 90 }),
 });
 
+export const TECHNOLOGY_PROTOTYPE = Object.freeze({ researchCost: 10 });
+
 const DRAW_SALT = 0x9e37_79b9;
 const DRAW_WEIGHT = CARD_KINDS.reduce((total, kind) => total + ECONOMY_PROTOTYPE.drawWeights[kind], 0);
 
@@ -25,6 +27,7 @@ export class ExpeditionEconomy {
   readonly #map: TerrainMap;
   readonly #initialDrawState: number;
   readonly #technologyCell: GridPosition;
+  #toolLevel: 1 | 2 = 1;
   #balance: number = ECONOMY_PROTOTYPE.initialBalance;
   #cards: CardCounts = ECONOMY_PROTOTYPE.initialCards;
   #drawState = 0;
@@ -34,7 +37,7 @@ export class ExpeditionEconomy {
   constructor(map: TerrainMap, seed: number, technologyCell: GridPosition = ECONOMY_PROTOTYPE.technologyCell) {
     this.#map = map;
     this.#initialDrawState = (seed ^ DRAW_SALT) >>> 0;
-    this.#technologyCell = { ...technologyCell };
+    this.#technologyCell = Object.freeze({ ...technologyCell });
     this.reset();
   }
 
@@ -44,6 +47,14 @@ export class ExpeditionEconomy {
 
   get cards(): CardCounts {
     return this.#cards;
+  }
+
+  get technologyCell(): GridPosition {
+    return this.#technologyCell;
+  }
+
+  get toolLevel(): 1 | 2 {
+    return this.#toolLevel;
   }
 
   get hasTechnology(): boolean {
@@ -83,16 +94,30 @@ export class ExpeditionEconomy {
 
   placeCard(kind: CardKind, cell: GridPosition): Building | undefined {
     if (!CARD_KINDS.includes(kind) || this.#cards[kind] <= 0) return undefined;
+    if (cell.col === this.#technologyCell.col && cell.row === this.#technologyCell.row) return undefined;
     const building = this.#map.placeBuilding(kind, cell, ECONOMY_PROTOTYPE.buildingHp[kind]);
     if (building) this.updateCards(kind, -1);
     return building;
   }
 
+  researchTool(): boolean {
+    const { researchCost } = TECHNOLOGY_PROTOTYPE;
+    if (this.#toolLevel === 2 || !this.hasTechnology || this.#balance < researchCost) return false;
+    this.#balance -= researchCost;
+    this.#toolLevel = 2;
+    return true;
+  }
+
+  rebuildTechnology(): Building | undefined {
+    return this.#map.placeBuilding("technology", this.#technologyCell, ECONOMY_PROTOTYPE.buildingHp.technology);
+  }
+
   reset(): void {
     const cell = this.#technologyCell;
-    if (!this.#map.placeBuilding("technology", cell, ECONOMY_PROTOTYPE.buildingHp.technology)) {
+    if (!this.rebuildTechnology()) {
       throw new Error(`Cannot place the technology facility at (${cell.col}, ${cell.row})`);
     }
+    this.#toolLevel = 1;
     this.#balance = ECONOMY_PROTOTYPE.initialBalance;
     this.#cards = ECONOMY_PROTOTYPE.initialCards;
     this.#drawState = this.#initialDrawState;

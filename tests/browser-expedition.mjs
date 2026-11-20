@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { ECONOMY_PROTOTYPE } from '../src/expedition-economy.ts';
 import { GENERATED_SPAWN } from '../src/generated-map.ts';
+import { MINING_CONFIG } from '../src/mining-config.ts';
 import { openWideGame } from './browser-fix02.mjs';
 
 const starterCards = { wall: 4, tower: 2, economy: 1 };
@@ -146,4 +147,85 @@ export async function runExpeditionSmoke(page, url) {
   assert.equal(await page.locator('#defense-stats').getAttribute('data-tower-kills'), '1');
   assert.equal(await page.locator('#defense-stats').getAttribute('data-wall-impacts'), '0');
   assert.equal(await balance(), 8 + ECONOMY_PROTOTYPE.towerKillReward);
+}
+
+export async function runResearchSmoke(page, url) {
+  const game = await openWideGame(page, url);
+  const tool = page.locator('#tool-level');
+  const research = page.locator('#research-tool');
+  const balance = page.locator('#economy-balance');
+  const center = (row) => ({ col: GENERATED_SPAWN.col, row });
+  const firstDirt = center(83);
+  const beforeSeam = center(64);
+  const advancedDirt = center(63);
+
+  async function holdMining(ms) {
+    await page.mouse.down({ button: 'left' });
+    try {
+      await page.clock.runFor(ms);
+    } finally {
+      await page.mouse.up({ button: 'left' });
+    }
+  }
+
+  async function assertSeamBlocked() {
+    await game.holdKey('KeyW', () => page.clock.runFor(500));
+    assert.deepEqual(await game.position(), beforeSeam);
+  }
+
+  const startingUrl = page.url();
+  assert.equal(await tool.textContent(), 'Lv.1');
+  assert.equal(await balance.textContent(), '8');
+  assert.ok(await research.isDisabled());
+  await page.locator('#card-economy').click();
+  await game.inspect(economyCell, '空地');
+  await holdMining(32);
+  assert.equal(await page.locator('#card-economy').getAttribute('data-count'), '0');
+  await page.clock.runFor(ECONOMY_PROTOTYPE.productionIntervalMs + 100);
+  assert.equal(await balance.textContent(), '9');
+  assert.ok(await research.isDisabled());
+  await page.clock.runFor(ECONOMY_PROTOTYPE.productionIntervalMs);
+  assert.equal(await balance.textContent(), '10');
+  assert.ok(await research.isEnabled());
+
+  await game.walkTo(center(84));
+  await game.inspect(firstDirt, '可挖地形', 'HP 5/5');
+  await game.openLineTo(firstDirt);
+  await game.openLineTo(beforeSeam);
+  await game.inspect(advancedDirt, '可挖地形', 'HP 8/8');
+  await holdMining(MINING_CONFIG.attackIntervalMs * 2);
+  assert.match(await page.locator('#dig-result').textContent(), /需要更高等级的工具/);
+  await game.inspect(advancedDirt, 'HP 8/8');
+  await assertSeamBlocked();
+
+  const beforeResearch = Number(await balance.textContent());
+  await research.click();
+  assert.equal(await tool.textContent(), 'Lv.2');
+  assert.equal(Number(await balance.textContent()), beforeResearch - 10);
+  assert.ok(await research.isDisabled());
+  await game.inspect(advancedDirt, 'HP 8/8');
+  const intact = await game.tilePixel(advancedDirt);
+  await holdMining(Math.floor(MINING_CONFIG.attackIntervalMs / 2));
+  await game.inspect(advancedDirt, 'HP 7/8');
+  assert.notDeepEqual(await game.tilePixel(advancedDirt), intact, 'Second-tier damage must be visible');
+  await assertSeamBlocked();
+
+  await game.walkTo(center(74));
+  await game.walkTo(beforeSeam);
+  assert.equal(await tool.textContent(), 'Lv.2');
+  await game.inspect(advancedDirt, 'HP 7/8');
+  await holdMining(8 * MINING_CONFIG.attackIntervalMs + 64);
+  await game.inspect(advancedDirt, '空地');
+  await game.walkTo(advancedDirt);
+  assert.match(await page.locator('#chunk-status').textContent(), /, 1\)$/);
+
+  await game.holdKey('KeyR', () => page.clock.runFor(48));
+  assert.equal(page.url(), startingUrl);
+  assert.deepEqual(await game.position(), GENERATED_SPAWN);
+  assert.equal(await tool.textContent(), 'Lv.1');
+  assert.equal(await balance.textContent(), '8');
+  assert.ok(await research.isDisabled());
+  await game.openLineTo(beforeSeam);
+  await game.inspect(advancedDirt, '可挖地形', 'HP 8/8');
+  await assertSeamBlocked();
 }

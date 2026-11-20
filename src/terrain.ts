@@ -1,6 +1,6 @@
 import { BUILDING_SYNTHESIS_CONFIG, BuildingStore } from "./buildings.ts";
 import type { Building, BuildingKind, WallImpact } from "./buildings.ts";
-import { MINING_CONFIG } from "./mining-config.ts";
+import { TERRAIN_HP_BY_LEVEL } from "./mining-config.ts";
 import { TEST_MAP_LAYOUT } from "./test-map.ts";
 
 export const MAP_COLUMNS = 24;
@@ -47,6 +47,7 @@ export type DigFailure =
   | "out-of-reach"
   | "rock"
   | "empty"
+  | "tool-level"
   | "invalid-damage";
 
 export type DigResult =
@@ -56,10 +57,11 @@ export type DigResult =
 const EMPTY: TerrainCell = Object.freeze({
   terrain: "empty", terrainLevel: 0, buildingId: null, hp: 0, maxHp: 0,
 });
-const DIRT: TerrainCell = Object.freeze({
-  terrain: "dirt", terrainLevel: 1, buildingId: null,
-  hp: MINING_CONFIG.dirtMaxHp, maxHp: MINING_CONFIG.dirtMaxHp,
-});
+function dirt(level: keyof typeof TERRAIN_HP_BY_LEVEL): TerrainCell {
+  const maxHp = TERRAIN_HP_BY_LEVEL[level];
+  return Object.freeze({ terrain: "dirt", terrainLevel: level, buildingId: null, hp: maxHp, maxHp });
+}
+
 const ROCK: TerrainCell = Object.freeze({
   terrain: "rock", terrainLevel: 1, buildingId: null, hp: null, maxHp: null,
 });
@@ -67,7 +69,8 @@ const MARKER_CELLS = new Map<string, TerrainCell>([
   [".", EMPTY],
   ["G", EMPTY],
   ["S", EMPTY],
-  ["+", DIRT],
+  ["+", dirt(1)],
+  ["2", dirt(2)],
   ["#", ROCK],
 ]);
 
@@ -212,13 +215,13 @@ export class TerrainMap implements TerrainReader {
     return impact;
   }
 
-  getDigFailure(from: GridPosition, target: GridPosition): DigFailure | undefined {
-    const cell = this.getDigTarget(from, target);
+  getDigFailure(from: GridPosition, target: GridPosition, toolLevel = 1): DigFailure | undefined {
+    const cell = this.getDigTarget(from, target, toolLevel);
     return typeof cell === "string" ? cell : undefined;
   }
 
-  applyDigDamage(from: GridPosition, target: GridPosition, damage: number): DigResult {
-    const cell = this.getDigTarget(from, target);
+  applyDigDamage(from: GridPosition, target: GridPosition, damage: number, toolLevel = 1): DigResult {
+    const cell = this.getDigTarget(from, target, toolLevel);
     if (typeof cell === "string") {
       return { effective: false, damage: 0, hp: this.getCell(target)?.hp ?? null, cleared: false, reason: cell };
     }
@@ -234,7 +237,9 @@ export class TerrainMap implements TerrainReader {
     return { effective: true, damage: cell.hp - hp, hp, cleared };
   }
 
-  private getDigTarget(from: GridPosition, target: GridPosition): Extract<TerrainCell, { terrain: "dirt" }> | DigFailure {
+  private getDigTarget(
+    from: GridPosition, target: GridPosition, toolLevel: number,
+  ): Extract<TerrainCell, { terrain: "dirt" }> | DigFailure {
     const cell = this.getCell(target);
     if (!cell) return "out-of-bounds";
     if (!this.isWalkable(from)) return "invalid-origin";
@@ -243,6 +248,7 @@ export class TerrainMap implements TerrainReader {
     if (distance !== 1) return "out-of-reach";
     if (cell.terrain === "rock") return "rock";
     if (cell.terrain === "empty") return "empty";
+    if (!Number.isInteger(toolLevel) || toolLevel < cell.terrainLevel) return "tool-level";
     return cell;
   }
 

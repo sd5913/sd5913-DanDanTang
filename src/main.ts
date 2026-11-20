@@ -1,6 +1,7 @@
 import Phaser from "phaser";
 import { DEFENSE_LAYOUT, DEFENSE_TARGET, ENEMY_ENTRY } from "./defense-map.ts";
 import { DENSE_LONG_MAP_LAYOUT } from "./dense-long-map.ts";
+import { addExpeditionTiers } from "./expedition-terrain.ts";
 import {
   GENERATED_ENEMY_ENTRY, GENERATED_GOAL, generateExpeditionWorld,
 } from "./generated-map.ts";
@@ -22,7 +23,7 @@ const world = wide ? generateExpeditionWorld(selectWorldSeed(params.get("seed"))
 let layout: readonly string[];
 let phase: string;
 if (world) {
-  layout = world.layout;
+  layout = play ? addExpeditionTiers(world.layout) : world.layout;
   phase = "P0-B FIX02";
 } else if (defense || fixture === "fix01") {
   layout = defense ? DEFENSE_LAYOUT : DENSE_LONG_MAP_LAYOUT;

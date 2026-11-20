@@ -166,10 +166,12 @@ const TILE_COLORS: Record<TerrainType, readonly string[]> = {
   dirt: ["#966649", "#9c6c4d", "#926448", "#98694b"],
   rock: ["#43505c", "#485562", "#44515d", "#46535f"],
 };
+const ADVANCED_DIRT_COLORS = ["#765c6b", "#7d6172", "#79596b", "#806477"];
 
 function paintTerrain(context: CanvasRenderingContext2D, cell: TerrainCell, x: number, y: number, variant: number): void {
   const { terrain } = cell;
-  context.fillStyle = TILE_COLORS[terrain][variant];
+  const colors = terrain === "dirt" && cell.terrainLevel === 2 ? ADVANCED_DIRT_COLORS : TILE_COLORS[terrain];
+  context.fillStyle = colors[variant];
   context.fillRect(x, y, TILE_SIZE, TILE_SIZE);
   if (terrain === "empty") return;
 

@@ -51,6 +51,7 @@
           <section id="expedition-panel" aria-labelledby="expedition-title" hidden>
             <h2 id="expedition-title">经营与建造</h2>
             <p>经济 <output id="economy-balance">0</output></p>
+            <p>工具 <output id="tool-level">Lv.1</output></p>
             <div class="defense-controls" aria-label="建筑卡">
               <button id="card-wall" type="button" aria-pressed="false"></button>
               <button id="card-tower" type="button" aria-pressed="false"></button>
@@ -58,6 +59,8 @@
             </div>
             <div class="defense-controls">
               <button id="make-card" type="button">制造卡牌</button>
+              <button id="research-tool" type="button">研发工具</button>
+              <button id="rebuild-technology" type="button" hidden>重建科技设施</button>
               <button id="expedition-spawn" type="button">调试出兵</button>
             </div>
             <p id="expedition-building">—</p>
