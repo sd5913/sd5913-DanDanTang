@@ -31,7 +31,11 @@ Baseline starts with building cards and economy. A brings waves forward, and B a
 
 Challenge starts with a level-one tool and no currency, cards, or structures. Each point of terrain damage actually applied earns 0.1 currency. Select **建造科技设施** and place it on a legal neighboring tile for 10 currency. With a facility, a card costs 3 and level-two tool research costs 20. At least one of the first three paid crafts yields a wall or tower. The first Challenge wave brings eight enemies after 60 seconds. If you lose the facility, you can pay to rebuild on another legal tile and keep research completed during that run.
 
-Walls retain numeric durability and consume enemies that collide with them. Towers, economy buildings, and technology facilities have 1 HP. An enemy that destroys one stays in play. Baseline, A, and B still start with a technology facility and use their original starting resources and research price.
+Walls retain numeric durability and consume enemies that collide with them. Towers, economy buildings, and technology facilities have 1 HP. An enemy that destroys one stays in play. When enemies lose sight of the player, they target reachable buildings first. An enemy that loses its building target and has no other reachable building can follow an open detour to the player. Baseline, A, and B still start with a technology facility and use their original starting resources and research price.
+
+Use the building experiment selector in Challenge to start a same-seed round with a different wall profile. Control keeps the original 50 HP wall and structure attributes. W35, W25, and W15 use the displayed level-one wall durability and enable level-two growth. I chose W25 as the first playtest candidate. Open a fixed comparison with `?mode=play&difficulty=challenge&seed=12&build=control` or change `build` to `w25`.
+
+Four orthogonally connected level-one buildings merge into one at the oldest building's position. The experimental upgrade doubles wall capacity and carries forward lost HP. It raises tower damage, range, and firing rate, and doubles economy output per cycle. Hover over a visible building to see its current attributes. A tower's active cooldown and a producer's elapsed cycle carry over through a merge.
 
 Development and browser regression checks have been run on Windows with desktop Microsoft Edge. Play uses a keyboard and mouse, and the current in-game interface is in Simplified Chinese. Other platforms, browsers, and touch controls have yet to be validated. Difficulty balance still awaits human playtesting.
 
@@ -45,7 +49,7 @@ npm run test:browser
 npm run preview
 ```
 
-The build writes to `dist/`. Browser tests use a locally installed Edge and require a build first. Use `npm run test:browser -- --normal-round` to include standard-timing round coverage, `npm run test:browser -- --challenge` for the Challenge scenarios, or `npm run test:browser -- --contacts` for player and building contact.
+The build writes to `dist/`. Browser tests use a locally installed Edge and require a build first. Use `npm run test:browser -- --normal-round` to include standard-timing round coverage, `npm run test:browser -- --challenge` for the Challenge scenarios, `npm run test:browser -- --building-balance` for building profiles and growth, or `npm run test:browser -- --contacts` for player and building contact.
 
 In play mode, add `&debug=1` to the URL and expand **玩家受击记录** to copy contact details, including world position, HP before and after the hit, and the red dot's camera and fog visibility.
 
