@@ -1,10 +1,13 @@
 import Phaser from "phaser";
+import { overlapsCell, placementFailure } from "./build-placement.ts";
+import type { PlacementFailure, PlacementPreview } from "./build-placement.ts";
 import { DefenseSimulation, enemyPosition, sameCell } from "./defense-simulation.ts";
 import type { DefenseEvent } from "./defense-simulation.ts";
 import { BUILDING_NAMES, ExpeditionControls } from "./expedition-controls.ts";
+import type { CardKind } from "./expedition-economy.ts";
 import { ExpeditionRound } from "./expedition-round.ts";
 import type { BiomeId } from "./expedition-biomes.ts";
-import { cellCenter, PLAYER_HALF_SIZE, TILE_SIZE } from "./player.ts";
+import { cellCenter, TILE_SIZE } from "./player.ts";
 import type { Player } from "./player.ts";
 import type { GridPosition, TerrainMap } from "./terrain.ts";
 
@@ -37,6 +40,7 @@ export class DefenseDebug {
   private readonly map: TerrainMap;
   private readonly player: Player;
   private readonly scenario: DefenseScenario;
+  private readonly isVisible: (cell: GridPosition) => boolean;
   private readonly simulation: DefenseSimulation;
   private readonly graphics: Phaser.GameObjects.Graphics;
   private readonly labelLayer: Phaser.GameObjects.Layer;
@@ -54,10 +58,12 @@ export class DefenseDebug {
   private shots: { readonly event: Shot; readonly expires: number }[] = [];
   private timeMs = 0;
 
-  constructor(scene: Phaser.Scene, map: TerrainMap, player: Player, scenario: DefenseScenario) {
+  constructor(scene: Phaser.Scene, map: TerrainMap, player: Player, scenario: DefenseScenario,
+    isVisible: (cell: GridPosition) => boolean) {
     this.map = map;
     this.player = player;
     this.scenario = scenario;
+    this.isVisible = isVisible;
     this.simulation = new DefenseSimulation(
       map, scenario.entry, scenario.target, (event) => this.onEvent(event), scenario.worldSeed !== undefined,
     );
@@ -69,7 +75,7 @@ export class DefenseDebug {
         debug: scenario.debugControls === true,
         spawnEnemy: () => this.spawnPrototypeEnemy(),
         spawnStress: (count) => this.spawnStress(count),
-        canRebuild: (cell) => this.canPlaceAt(cell),
+        checkPlacement: (cell, kind) => this.checkPlacement(cell, kind),
       });
       return;
     }
@@ -109,7 +115,8 @@ export class DefenseDebug {
     }
   }
 
-  render(view: Phaser.Geom.Rectangle, cell: GridPosition | null, isVisible: (cell: GridPosition) => boolean): void {
+  render(view: Phaser.Geom.Rectangle, cell: GridPosition | null): PlacementPreview | undefined {
+    const { isVisible } = this;
     const graphics = this.graphics.clear();
     let labelCount = 0;
     for (const building of this.map.getBuildings()) {
@@ -168,6 +175,7 @@ export class DefenseDebug {
     const description = building ? `${name} ${coordinates(building.cell)} · ${building.hp} HP${level}` : "—";
     write(this.hover, description);
     this.expedition?.showBuilding(description);
+    return this.expedition?.previewPlacement(cell);
   }
 
   reset(): void {
@@ -182,10 +190,8 @@ export class DefenseDebug {
     write(this.status, "等待布防或生成敌人");
   }
 
-  placeSelectedCard(cell: GridPosition, visible: boolean): boolean {
-    if (!this.expedition?.hasSelection) return false;
-    this.expedition.placeSelected(cell, visible && this.canPlaceAt(cell));
-    return true;
+  placeSelectedCard(cell: GridPosition): boolean {
+    return this.expedition?.placeSelected(cell) ?? false;
   }
 
   get roundEnded(): boolean { return this.round?.phase === "won" || this.round?.phase === "lost"; }
@@ -240,15 +246,23 @@ export class DefenseDebug {
 
   private canPlaceAt(cell: GridPosition): boolean {
     return !sameCell(cell, this.scenario.entry) && !sameCell(cell, this.scenario.target)
-      && !this.overlapsPlayer(cell) && !this.simulation.occupies(cell);
+      && !overlapsCell(this.player.position, cell) && !this.simulation.occupies(cell);
   }
 
-  private overlapsPlayer(cell: GridPosition): boolean {
-    const { x, y } = this.player.position;
-    const left = cell.col * TILE_SIZE;
-    const top = cell.row * TILE_SIZE;
-    return x + PLAYER_HALF_SIZE > left && x - PLAYER_HALF_SIZE < left + TILE_SIZE
-      && y + PLAYER_HALF_SIZE > top && y - PLAYER_HALF_SIZE < top + TILE_SIZE;
+  private readonly enemyOccupies = (cell: GridPosition): boolean => this.simulation.occupies(cell);
+
+  private checkPlacement(cell: GridPosition, kind: CardKind | "technology"): PlacementFailure | undefined {
+    const economy = this.expedition?.economy;
+    const reserved = sameCell(cell, this.scenario.entry) || sameCell(cell, this.scenario.target)
+      || (kind !== "technology" && economy !== undefined && sameCell(cell, economy.technologyCell));
+    return placementFailure(this.map, cell, {
+      playerPosition: this.player.position,
+      roundEnded: this.roundEnded,
+      visible: this.isVisible(cell),
+      reserved,
+      enemyOccupies: this.enemyOccupies,
+      cardCount: kind === "technology" ? undefined : economy?.cards[kind] ?? 0,
+    });
   }
 
   private onEvent(event: DefenseEvent): void {

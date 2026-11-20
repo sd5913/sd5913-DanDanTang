@@ -97,7 +97,7 @@ test("99 seed fixtures vary depth order and keep continuous regions, dry shores,
     assert.equal(reachable(water[0], ({ col, row }) => layout[row][col] === "~").size, water.length);
     assert.equal(layout.reduce((count, line) => count + [...line].filter((marker) => marker === "~").length, 0), water.length);
 
-    const playable = addExpeditionTiers(layout);
+    const playable = addExpeditionTiers(layout, seed);
     for (const { col, row } of shore) assert.equal(playable[row][col], ".", "the tier gates must leave the shore intact");
     const shoreNetwork = reachable(shore[0], ({ col, row }) => playable[row][col] === ".");
     assert.equal(shoreNetwork.size, shore.length, "the dry shore must be a connected, distinct ring");

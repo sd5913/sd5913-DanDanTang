@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict';
-import { ECONOMY_PROTOTYPE } from '../src/expedition-economy.ts';
-import { generateExpeditionBiomes } from '../src/expedition-biomes.ts';
-import { addExpeditionTiers } from '../src/expedition-terrain.ts';
-import { GENERATED_SPAWN, generateExpeditionMap } from '../src/generated-map.ts';
-import { MINING_CONFIG } from '../src/mining-config.ts';
-import { openWideGame } from './browser-fix02.mjs';
+import { ECONOMY_PROTOTYPE, TECHNOLOGY_PROTOTYPE } from '../src/expedition-economy.ts';
+import { EXPEDITION_STRATA, PLAY_GENERATOR_VERSION } from '../src/expedition-terrain.ts';
+import { GENERATED_SPAWN } from '../src/generated-map.ts';
+import { MINING_CONFIG, TERRAIN_HP_BY_LEVEL } from '../src/mining-config.ts';
+import { assertVisibleCardDraw } from './browser-card-feedback.mjs';
+import { openWideGame, playFixture, readCanvasFingerprint } from './browser-fix02.mjs';
 
 const starterCards = { wall: 4, tower: 2, economy: 1 };
 const technologyCell = { col: 17, row: 90 };
@@ -69,8 +69,11 @@ export async function runExpeditionSmoke(page, url) {
     await page.clock.runFor(32);
     assert.equal(await balance(), startBalance - ECONOMY_PROTOTYPE.drawCost);
     const after = await inventory();
-    const differences = Object.keys(before).map((kind) => after[kind] - before[kind]);
+    const kinds = Object.keys(before);
+    const differences = kinds.map((kind) => after[kind] - before[kind]);
     assert.deepEqual(differences.toSorted((a, b) => a - b), [0, 0, 1]);
+    const kind = kinds[differences.indexOf(1)];
+    await assertVisibleCardDraw(page, kind, before[kind]);
     return differences;
   }
 
@@ -113,15 +116,18 @@ export async function runExpeditionSmoke(page, url) {
   assert.equal(await balance(), 8, 'An invalid placement must not consume economy');
   assert.equal(await cards.wall.getAttribute('aria-pressed'), 'true');
 
+  await game.walkVia({ col: 19, row: 89 }, { col: 17, row: 89 });
   for (const [index, cell] of walls.entries()) {
+    if (index === 3) await game.walkVia({ col: 18, row: 89 });
     await build('wall', cell);
     assert.equal((await inventory()).wall, starterCards.wall - index - 1);
   }
   assert.equal(await feedback.textContent(), `已合成城墙 Lv.2 ${formatCell(anchor)}`);
   assert.match(await buildingAt(anchor), /^城墙 \(16, 88\) · \d+ HP · Lv\.2$/);
   for (const cell of walls.slice(1)) assert.equal(await buildingAt(cell), '—');
-  await game.walkTo(released);
+  await game.walkVia({ col: 19, row: 89 }, released);
 
+  await game.walkVia({ col: 19, row: 89 }, { col: 20, row: 89 });
   await build('economy', economyCell);
   assert.match(await buildingAt(economyCell), /^经济建筑 \(21, 90\)/);
   assert.equal((await inventory()).economy, 0);
@@ -140,7 +146,7 @@ export async function runExpeditionSmoke(page, url) {
   assert.ok(await makeCard.isDisabled(), 'Manufacture must be unavailable when the cost is not covered');
 
   await reset();
-  await game.openLineTo({ col: 28, row: 92 });
+  await game.walkVia({ col: 21, row: 92 }, { col: 21, row: 94 }, { col: 26, row: 94 });
   await game.settleView();
   await build('tower', towerCell);
   assert.match(await buildingAt(towerCell), /^防御塔 \(27, 94\)/);
@@ -154,33 +160,55 @@ export async function runExpeditionSmoke(page, url) {
 }
 
 export async function runResearchSmoke(page, url) {
-  const game = await openWideGame(page, url);
+  const { layout, biomes } = playFixture();
+  const game = await openWideGame(page, url, layout);
   const tool = page.locator('#tool-level');
   const research = page.locator('#research-tool');
   const balance = page.locator('#economy-balance');
+  const hover = page.locator('#hover-cell');
   const center = (row) => ({ col: GENERATED_SPAWN.col, row });
   const firstDirt = center(83);
-  const beforeSeam = center(64);
-  const advancedDirt = center(63);
+  const { transitionNorthRow, transitionSouthRow, bodySouthRow } = EXPEDITION_STRATA;
+  const advancedRow = layout.findLastIndex((line, row) => row < GENERATED_SPAWN.row && line[GENERATED_SPAWN.col] === '2');
+  assert.ok(advancedRow >= transitionNorthRow && advancedRow <= transitionSouthRow);
+  const advancedDirt = center(advancedRow);
+  const beforeGate = center(advancedRow + 1);
+  const transitionLow = [beforeGate.col + 1, beforeGate.col - 1]
+    .map((col) => ({ col, row: beforeGate.row }))
+    .find((cell) => layout[cell.row][cell.col] === '+'
+      && biomes[cell.row][cell.col] === biomes[advancedDirt.row][advancedDirt.col]);
+  assert.ok(transitionLow && transitionLow.row <= transitionSouthRow, 'The same transition stance must see both dirt levels');
+  const bodyRows = layout.flatMap((line, row) => row >= 50 && row <= bodySouthRow && line[GENERATED_SPAWN.col] === '2' ? [row] : []);
+  const firstBody = bodyRows.at(-1);
+  const deeperBody = bodyRows.findLast((row) => row <= firstBody - 4);
+  assert.ok(firstBody !== undefined && deeperBody !== undefined, 'The fixture must have two separated body cells on the route');
+  const advancedHp = TERRAIN_HP_BY_LEVEL[2];
+  const lowHp = TERRAIN_HP_BY_LEVEL[1];
 
   async function holdMining(ms) {
     await page.mouse.down({ button: 'left' });
     try {
-      await page.clock.runFor(ms);
+      if (ms > 0) await page.clock.runFor(ms);
     } finally {
       await page.mouse.up({ button: 'left' });
     }
   }
 
-  async function assertSeamBlocked() {
+  async function assertGateBlocked() {
     await game.holdKey('KeyW', () => page.clock.runFor(500));
-    assert.deepEqual(await game.position(), beforeSeam);
+    assert.deepEqual(await game.position(), beforeGate);
+  }
+
+  async function inspectDirt(cell, tier, hp) {
+    await game.inspect(cell, '可挖地形', `HP ${hp}/${TERRAIN_HP_BY_LEVEL[tier]}`, `Lv.${tier}`);
+    assert.equal(await hover.getAttribute('data-visibility'), 'visible');
   }
 
   const startingUrl = page.url();
   assert.equal(await tool.textContent(), 'Lv.1');
   assert.equal(await balance.textContent(), '8');
   assert.ok(await research.isDisabled());
+  await game.walkVia({ col: 19, row: 91 }, { col: 20, row: 91 });
   await page.locator('#card-economy').click();
   await game.inspect(economyCell, '空地');
   await holdMining(32);
@@ -192,36 +220,53 @@ export async function runResearchSmoke(page, url) {
   assert.equal(await balance.textContent(), '10');
   assert.ok(await research.isEnabled());
 
-  await game.walkTo(center(84));
-  await game.inspect(firstDirt, '可挖地形', 'HP 5/5');
+  await game.walkVia(center(91), center(84));
+  await inspectDirt(firstDirt, 1, lowHp);
   await game.openLineTo(firstDirt);
-  await game.openLineTo(beforeSeam);
-  await game.inspect(advancedDirt, '可挖地形', 'HP 8/8');
+  await game.openLineTo(beforeGate);
+  await inspectDirt(transitionLow, 1, lowHp);
+  const basicColor = await game.tilePixel(transitionLow);
+  await inspectDirt(advancedDirt, 2, advancedHp);
+  const advancedColor = await game.tilePixel(advancedDirt);
+  assert.notDeepEqual(advancedColor, basicColor, 'Fog-visible first and second-tier dirt must look different in the same biome');
   await holdMining(MINING_CONFIG.attackIntervalMs * 2);
-  assert.match(await page.locator('#dig-result').textContent(), /需要更高等级的工具/);
-  await game.inspect(advancedDirt, 'HP 8/8');
-  await assertSeamBlocked();
+  assert.match(await page.locator('#dig-result').textContent(), /需要二级挖掘工具/);
+  await inspectDirt(advancedDirt, 2, advancedHp);
+  await assertGateBlocked();
+
+  await inspectDirt(advancedDirt, 2, advancedHp);
+  await holdMining(0);
+  await inspectDirt(transitionLow, 1, lowHp);
+  await holdMining(0);
+  await inspectDirt(transitionLow, 1, lowHp - 1);
+  await page.clock.runFor(MINING_CONFIG.attackIntervalMs + 32);
 
   const beforeResearch = Number(await balance.textContent());
   await research.click();
   assert.equal(await tool.textContent(), 'Lv.2');
-  assert.equal(Number(await balance.textContent()), beforeResearch - 10);
+  assert.equal(Number(await balance.textContent()), beforeResearch - TECHNOLOGY_PROTOTYPE.researchCost);
   assert.ok(await research.isDisabled());
-  await game.inspect(advancedDirt, 'HP 8/8');
+  await inspectDirt(advancedDirt, 2, advancedHp);
   const intact = await game.tilePixel(advancedDirt);
   await holdMining(Math.floor(MINING_CONFIG.attackIntervalMs / 2));
-  await game.inspect(advancedDirt, 'HP 7/8');
+  await inspectDirt(advancedDirt, 2, advancedHp - 1);
   assert.notDeepEqual(await game.tilePixel(advancedDirt), intact, 'Second-tier damage must be visible');
-  await assertSeamBlocked();
+  await assertGateBlocked();
 
   await game.walkTo(center(74));
-  await game.walkTo(beforeSeam);
+  await game.walkTo(beforeGate);
   assert.equal(await tool.textContent(), 'Lv.2');
-  await game.inspect(advancedDirt, 'HP 7/8');
-  await holdMining(8 * MINING_CONFIG.attackIntervalMs + 64);
+  await inspectDirt(advancedDirt, 2, advancedHp - 1);
+  await holdMining(advancedHp * MINING_CONFIG.attackIntervalMs + 64);
   await game.inspect(advancedDirt, '空地');
   await game.walkTo(advancedDirt);
-  assert.match(await page.locator('#chunk-status').textContent(), /, 1\)$/);
+  for (const row of [firstBody, deeperBody]) {
+    await game.openLineTo(center(row + 1));
+    assert.match(await page.locator('#chunk-status').textContent(), /, 1\)$/);
+    await inspectDirt(center(row), 2, advancedHp);
+    await game.openLineTo(center(row), true);
+    await game.inspect(center(row), '空地');
+  }
 
   await game.holdKey('KeyR', () => page.clock.runFor(48));
   assert.equal(page.url(), startingUrl);
@@ -229,14 +274,50 @@ export async function runResearchSmoke(page, url) {
   assert.equal(await tool.textContent(), 'Lv.1');
   assert.equal(await balance.textContent(), '8');
   assert.ok(await research.isDisabled());
-  await game.openLineTo(beforeSeam);
-  await game.inspect(advancedDirt, '可挖地形', 'HP 8/8');
-  await assertSeamBlocked();
+  await game.openLineTo(beforeGate);
+  await inspectDirt(advancedDirt, 2, advancedHp);
+  await inspectDirt(transitionLow, 1, lowHp);
+  await assertGateBlocked();
+  return { gateRow: advancedRow, advancedBodyRows: [firstBody, deeperBody] };
+}
+
+export async function runStrataSeedSmoke(page, url) {
+  const freshSeed = 13;
+  await page.addInitScript((nextSeed) => {
+    const original = crypto.getRandomValues.bind(crypto);
+    Object.defineProperty(crypto, 'getRandomValues', { value(values) {
+      if (!(values instanceof Uint32Array) || values.length !== 1) return original(values);
+      values[0] = nextSeed;
+      return values;
+    } });
+  }, freshSeed);
+  assert.equal(PLAY_GENERATOR_VERSION, 4);
+  const game = await openWideGame(page, url);
+  const seedLabel = page.locator('#map-size');
+  const initial = await seedLabel.textContent();
+  assert.match(initial, /种子 12 · 生成器 v4 · 备用布局 未启用/);
+  const canvas = await readCanvasFingerprint(page);
+
+  await page.clock.resume();
+  assert.equal((await page.reload())?.status(), 200);
+  await page.waitForFunction(() => Number(document.querySelector('#visible-chunks')?.dataset.worldWidth) > 0);
+  assert.equal(await seedLabel.textContent(), initial);
+  assert.deepEqual(await readCanvasFingerprint(page), canvas, 'Version four must reproduce the initial canvas at seed 12');
+
+  await Promise.all([
+    page.waitForURL((next) => next.searchParams.get('seed') === String(freshSeed)),
+    page.getByRole('button', { name: '新开一局', exact: true }).click(),
+  ]);
+  await page.waitForFunction(() => Number(document.querySelector('#visible-chunks')?.dataset.worldWidth) > 0);
+  const newUrl = new URL(page.url());
+  assert.equal(newUrl.searchParams.get('mode'), 'play');
+  assert.equal(newUrl.searchParams.get('seed'), String(freshSeed));
+  assert.match(await seedLabel.textContent(), /种子 13 · 生成器 v4 · 备用布局 未启用/);
+  assert.deepEqual(await game.position(), GENERATED_SPAWN);
 }
 
 export async function runBiomeFogSmoke(page, url) {
-  const seeded = generateExpeditionBiomes(generateExpeditionMap(12), 12);
-  const game = await openWideGame(page, url, addExpeditionTiers(seeded.layout));
+  const game = await openWideGame(page, url, playFixture().layout);
   const hover = page.locator('#hover-cell');
   const biome = page.locator('#expedition-biome');
   const target = { col: GENERATED_SPAWN.col, row: 83 };
@@ -282,10 +363,12 @@ export async function runBiomeFogSmoke(page, url) {
   assert.deepEqual(await game.position(), GENERATED_SPAWN);
   assert.deepEqual(await observe('unknown'), hidden, 'R must clear exploration memory for the same seed');
 
+  await game.walkVia({ col: 19, row: 91 }, { col: 20, row: 91 });
   await page.locator('#card-economy').click();
   await interactWith(economyCell, '空地');
   await page.clock.runFor(2 * ECONOMY_PROTOTYPE.productionIntervalMs + 150);
   await page.locator('#research-tool').click();
+  await game.walkVia({ col: 19, row: 91 });
   await game.openLineTo(plain);
   assert.equal(await biome.textContent(), '平原', 'An excavated plain tile must preserve its biome');
   await game.openLineTo(lakeShore);

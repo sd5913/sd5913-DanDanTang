@@ -97,8 +97,10 @@ test("live wall collisions pay nothing while a real automatic tower kill pays on
 test("drawing needs a facility and currency, spends three once, and credits exactly one card", () => {
   const { map, economy } = createEconomy();
   const control = createEconomy().economy;
+  assert.equal(economy.drawFailure, undefined);
   assert.ok(map.removeBuilding(technology));
   assert.equal(economy.hasTechnology, false);
+  assert.equal(economy.drawFailure, "technology-destroyed");
   assert.equal(economy.drawCard(), undefined);
   assert.equal(economy.balance, initialBalance);
   assert.deepEqual(economy.cards, initialCards);
@@ -112,9 +114,14 @@ test("drawing needs a facility and currency, spends three once, and credits exac
     assert.equal(economy.balance, remaining);
     assert.deepEqual(economy.cards, expectedCards);
   }
+  assert.equal(economy.drawFailure, "insufficient-funds");
   assert.equal(economy.drawCard(), undefined);
   assert.equal(economy.balance, 2);
   assert.deepEqual(economy.cards, expectedCards);
+  economy.handleEvent(towerKill(10));
+  control.handleEvent(towerKill(10));
+  assert.equal(economy.drawFailure, undefined);
+  assert.equal(economy.drawCard(), control.drawCard(), "a rejected draw for funds must not advance the seeded stream");
 });
 
 test("the card sequence is deterministic from its own seed and includes each configured kind", () => {

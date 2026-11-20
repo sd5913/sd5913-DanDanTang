@@ -1,5 +1,10 @@
 import assert from 'node:assert/strict';
-import { DEFAULT_MAP_SEED, GENERATED_ENEMY_ENTRY, GENERATED_GOAL, GENERATED_SPAWN, generateExpeditionMap } from '../src/generated-map.ts';
+import { generateExpeditionBiomes } from '../src/expedition-biomes.ts';
+import { addExpeditionApproach, addExpeditionTiers } from '../src/expedition-terrain.ts';
+import {
+  DEFAULT_MAP_SEED, GENERATED_ENEMY_ENTRY, GENERATED_GOAL, GENERATED_SPAWN,
+  generateExpeditionMap, generateExpeditionWorld,
+} from '../src/generated-map.ts';
 import { MINING_CONFIG, TERRAIN_HP_BY_LEVEL } from '../src/mining-config.ts';
 import { TILE_SIZE } from '../src/player.ts';
 
@@ -12,6 +17,23 @@ const epsilon = 1;
 const { dirtMaxHp, attackIntervalMs } = MINING_CONFIG;
 const coordinates = ({ col, row }) => `(${col}, ${row})`;
 const centerLane = (row) => ({ col: GENERATED_SPAWN.col, row });
+
+export function playFixture(requestedSeed = seed) {
+  const world = generateExpeditionWorld(requestedSeed);
+  const landscape = generateExpeditionBiomes(world.layout, world.effectiveSeed);
+  return {
+    layout: addExpeditionApproach(addExpeditionTiers(landscape.layout, world.effectiveSeed)),
+    biomes: landscape.biomes,
+  };
+}
+
+export function readCanvasFingerprint(page) {
+  return page.locator('#board canvas').evaluate(async (canvas) => {
+    const pixels = canvas.getContext('2d').getImageData(0, 0, canvas.width, canvas.height).data;
+    const digest = await crypto.subtle.digest('SHA-256', pixels);
+    return Array.from(new Uint8Array(digest));
+  });
+}
 
 function near(actual, expected, message) {
   assert.ok(Math.abs(actual - expected) <= epsilon, `${message}: expected ${expected}, saw ${actual}`);
@@ -95,6 +117,10 @@ export async function openWideGame(page, url, routeLayout = layout) {
     await page.mouse.move(bounds.x + x * bounds.width / camera.width, bounds.y + y * bounds.height / camera.height);
   }
 
+  async function walkVia(...stops) {
+    for (const stop of stops) await walkTo(stop, true);
+  }
+
   async function inspect(cell, ...details) {
     await aimAt(cell);
     const label = await hover.textContent();
@@ -153,10 +179,12 @@ export async function openWideGame(page, url, routeLayout = layout) {
   assert.equal((await page.goto(url))?.status(), 200);
   await board.waitFor();
   await page.waitForFunction(() => Number(document.querySelector('#visible-chunks')?.dataset.worldWidth) > 0);
-  assert.match(await page.locator('#map-size').textContent(), /40 × 96 · 种子 12/);
+  const expectedSeed = new URL(url).searchParams.get('seed') ?? String(seed);
+  const mapLabel = await page.locator('#map-size').textContent();
+  assert.equal(mapLabel.match(/40 × 96 · 种子 (\d+)/)?.[1], expectedSeed, `Unexpected map label: ${mapLabel}`);
   await page.clock.pauseAt(await page.evaluate(() => Date.now() + 200));
   assert.deepEqual(await position(), GENERATED_SPAWN);
-  return { view, position, holdKey, walkTo, openLineTo, aimAt, inspect, tilePixel, settleView };
+  return { view, position, holdKey, walkTo, walkVia, openLineTo, aimAt, inspect, tilePixel, settleView };
 }
 
 export async function runFix02MapSmoke(page, url) {
@@ -310,14 +338,6 @@ export async function runFix02RoundSmoke(page, url) {
     assert.ok(await page.getByRole('button', { name: '南端生成' }).isVisible());
   }
 
-  async function fingerprint() {
-    return page.locator('#board canvas').evaluate(async (canvas) => {
-      const pixels = canvas.getContext('2d').getImageData(0, 0, canvas.width, canvas.height).data;
-      const digest = await crypto.subtle.digest('SHA-256', pixels);
-      return Array.from(new Uint8Array(digest));
-    });
-  }
-
   async function hitOnce() {
     await game.inspect(dugTile, '可挖地形', `HP ${dirtMaxHp}/${dirtMaxHp}`);
     await page.mouse.down({ button: 'left' });
@@ -326,7 +346,7 @@ export async function runFix02RoundSmoke(page, url) {
   }
 
   await assertRound(12, 1);
-  const initialFrame = await fingerprint();
+  const initialFrame = await readCanvasFingerprint(page);
   const shareableUrl = page.url();
   await hitOnce();
   await game.holdKey('KeyR', () => page.clock.runFor(48));
@@ -338,7 +358,7 @@ export async function runFix02RoundSmoke(page, url) {
   await page.clock.resume();
   assert.equal((await page.reload())?.status(), 200);
   await assertRound(12, 1);
-  assert.deepEqual(await fingerprint(), initialFrame, 'The shared URL must reproduce the same initial canvas');
+  assert.deepEqual(await readCanvasFingerprint(page), initialFrame, 'The shared URL must reproduce the same initial canvas');
 
   await page.clock.pauseAt(await page.evaluate(() => Date.now() + 200));
   await hitOnce();
@@ -348,7 +368,7 @@ export async function runFix02RoundSmoke(page, url) {
     roundButton.click(),
   ]);
   await assertRound(42, 3);
-  assert.notDeepEqual(await fingerprint(), initialFrame, 'The fresh seed must change the visible map');
+  assert.notDeepEqual(await readCanvasFingerprint(page), initialFrame, 'The fresh seed must change the visible map');
   await game.inspect(dugTile, '可挖地形', `HP ${dirtMaxHp}/${dirtMaxHp}`);
 
   const invalidUrl = new URL(page.url());

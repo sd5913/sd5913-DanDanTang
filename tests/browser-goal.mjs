@@ -1,14 +1,16 @@
 import assert from 'node:assert/strict';
+import { BIOME_NAMES } from '../src/biome-effects.ts';
 import { generateExpeditionBiomes } from '../src/expedition-biomes.ts';
 import { ECONOMY_PROTOTYPE, TECHNOLOGY_PROTOTYPE } from '../src/expedition-economy.ts';
 import { PROTOTYPE_ONLY } from '../src/expedition-round.ts';
-import { addExpeditionApproach, addExpeditionTiers } from '../src/expedition-terrain.ts';
+import { addExpeditionApproach, addExpeditionTiers, EXPEDITION_STRATA } from '../src/expedition-terrain.ts';
 import { GENERATED_GOAL, GENERATED_SPAWN, generateExpeditionMap } from '../src/generated-map.ts';
+import { assertVisibleCardDraw, readCardInventory } from './browser-card-feedback.mjs';
 import { openWideGame } from './browser-fix02.mjs';
 
 const seed = 12;
-const { layout: biomeLayout } = generateExpeditionBiomes(generateExpeditionMap(seed), seed);
-const layout = addExpeditionApproach(addExpeditionTiers(biomeLayout));
+const { layout: biomeLayout, biomes } = generateExpeditionBiomes(generateExpeditionMap(seed), seed);
+const layout = addExpeditionApproach(addExpeditionTiers(biomeLayout, seed));
 
 async function readRound(page) {
   return page.evaluate(() => {
@@ -129,17 +131,24 @@ function findDiggablePath(blockers) {
 }
 
 async function followRoute(page, game, route) {
+  const visitedBiomes = new Set();
   let start = 0;
   while (start < route.length - 1) {
     let end = start + 1;
     const stepCol = route[end].col - route[start].col;
     const stepRow = route[end].row - route[start].row;
+    const biome = biomes[route[end].row][route[end].col];
     while (end < route.length - 1 && route[end + 1].col - route[end].col === stepCol
-      && route[end + 1].row - route[end].row === stepRow) end += 1;
+      && route[end + 1].row - route[end].row === stepRow
+      && biomes[route[end + 1].row][route[end + 1].col] === biome) end += 1;
     await game.openLineTo(route[end], true);
+    assert.equal(await page.locator('#expedition-biome').textContent(), BIOME_NAMES[biome]);
+    visitedBiomes.add(biome);
     assert.notEqual((await readRound(page)).phase, 'lost', 'The defended expedition must survive to the next route turn');
     start = end;
   }
+  assert.ok([...visitedBiomes].some((biome) => biome !== 'ordinary'), 'Victory must discover special terrain');
+  return [...visitedBiomes];
 }
 
 export async function runVictorySmoke(page, url) {
@@ -165,11 +174,47 @@ export async function runVictorySmoke(page, url) {
 
   async function balance() { return Number(await page.locator('#economy-balance').textContent()); }
 
-  for (const tower of towers) await place('tower', tower);
-  assert.equal(await page.locator('#card-tower').getAttribute('data-count'), '0');
-  for (const wall of walls) await place('wall', wall);
-  assert.equal(await page.locator('#card-wall').getAttribute('data-count'), '0');
-  assert.match(await page.locator('#expedition-feedback').textContent(), /已合成城墙 Lv\.2 \(16, 88\)/);
+  async function manufacture() {
+    const cash = await balance();
+    const before = await readCardInventory(page);
+    await page.locator('#make-card').click();
+    assert.equal(await balance(), cash - ECONOMY_PROTOTYPE.drawCost);
+    const after = await readCardInventory(page);
+    const drawn = Object.keys(before).find((kind) => after[kind] === before[kind] + 1);
+    await assertVisibleCardDraw(page, drawn, before[drawn]);
+    assert.deepEqual(after, { ...before, [drawn]: before[drawn] + 1 });
+    return drawn;
+  }
+
+  let firstDraw;
+  if (!fast) {
+    const fogTarget = { col: 19, row: 82 };
+    await game.aimAt(fogTarget);
+    assert.equal(await page.locator('#hover-cell').getAttribute('data-visibility'), 'unknown');
+    const initialSoil = { col: 19, row: 93 };
+    await game.inspect(initialSoil, '可挖地形', 'HP 5/5', 'Lv.1');
+    await page.mouse.down({ button: 'left' });
+    try {
+      await page.clock.runFor(700);
+    } finally {
+      await page.mouse.up({ button: 'left' });
+    }
+    await game.inspect(initialSoil, '空地');
+    firstDraw = await manufacture();
+
+    const before = await readCardInventory(page);
+    await place('tower', towers[1]);
+    assert.match(await page.locator('#expedition-feedback').textContent(), /过远|一格|相邻/);
+    assert.deepEqual(await readCardInventory(page), before, 'A distant placement must keep the tower card');
+  }
+
+  const beforeTowers = await readCardInventory(page);
+  await game.walkVia({ col: 21, row: 92 }, { col: 21, row: 94 }, { col: 25, row: 94 });
+  await place('tower', towers[1]);
+  await game.walkTo({ col: 24, row: 94 }, true);
+  await place('tower', towers[0]);
+  assert.equal((await readCardInventory(page)).tower, beforeTowers.tower - towers.length);
+  await game.walkVia({ col: 21, row: 94 }, { col: 21, row: 92 }, GENERATED_SPAWN);
 
   // Keep normal preparation inside the actual simulated frame loop.
   if (!fast) {
@@ -187,17 +232,30 @@ export async function runVictorySmoke(page, url) {
   assert.equal(defending.requested, firstWaveSize);
   assert.equal(defending.towerKills, firstWaveSize);
   assert.equal(defending.hp, PROTOTYPE_ONLY.playerHp);
-  assert.equal(await balance(), ECONOMY_PROTOTYPE.initialBalance + defending.towerKills * ECONOMY_PROTOTYPE.towerKillReward);
+  const spentAtStart = firstDraw ? ECONOMY_PROTOTYPE.drawCost : 0;
+  const startingCash = ECONOMY_PROTOTYPE.initialBalance - spentAtStart;
+  assert.equal(await balance(), startingCash + defending.towerKills * ECONOMY_PROTOTYPE.towerKillReward);
 
+  const beforeWalls = await readCardInventory(page);
+  await game.walkVia({ col: 19, row: 89 }, { col: 17, row: 89 });
+  if (!fast) {
+    const explored = { col: 19, row: 82 };
+    await game.inspect(explored, '可挖地形');
+  }
+  for (const wall of walls.slice(0, 3)) await place('wall', wall);
+  await game.walkTo({ col: 18, row: 89 }, true);
+  await place('wall', walls.at(-1));
+  assert.equal((await readCardInventory(page)).wall, beforeWalls.wall - walls.length);
+  assert.match(await page.locator('#expedition-feedback').textContent(), /已合成城墙 Lv\.2 \(16, 88\)/);
+
+  await game.walkVia({ col: 19, row: 89 }, { col: 19, row: 91 }, { col: 20, row: 91 });
   await place('economy', producer);
+  await game.walkVia({ col: 19, row: 91 }, GENERATED_SPAWN);
   await page.clock.runFor(ECONOMY_PROTOTYPE.productionIntervalMs + 100);
   const withIncome = await readRound(page);
-  assert.equal(await balance(), ECONOMY_PROTOTYPE.initialBalance + withIncome.towerKills * ECONOMY_PROTOTYPE.towerKillReward
+  assert.equal(await balance(), startingCash + withIncome.towerKills * ECONOMY_PROTOTYPE.towerKillReward
     + ECONOMY_PROTOTYPE.productionAmount);
-  const balanceBeforeDraw = await balance();
-  await page.locator('#make-card').click();
-  assert.equal(await balance(), balanceBeforeDraw - ECONOMY_PROTOTYPE.drawCost);
-  assert.match(await page.locator('#expedition-feedback').textContent(), /已制造.+卡/);
+  await manufacture();
   const balanceBeforeResearch = await balance();
   await page.locator('#research-tool').click();
   assert.equal(await page.locator('#tool-level').textContent(), 'Lv.2');
@@ -214,7 +272,7 @@ export async function runVictorySmoke(page, url) {
   assert.deepEqual(await game.position(), GENERATED_SPAWN);
 
   const route = findDiggablePath([...towers, walls[0], producer, ECONOMY_PROTOTYPE.technologyCell]);
-  await followRoute(page, game, route);
+  const visitedBiomes = await followRoute(page, game, route);
   assert.deepEqual(await game.position(), GENERATED_GOAL);
   const win = await readRound(page);
   assert.equal(win.phase, 'won');
@@ -222,9 +280,16 @@ export async function runVictorySmoke(page, url) {
   assert.ok(win.hp > 0);
   assert.match(win.label, /获胜/);
   await assertTerminal(page, game, 'won');
-  const minedTiles = route.slice(1).filter(({ col, row }) => /[+2]/.test(layout[row][col])).length;
+  const routeCells = route.slice(1);
+  const minedTiles = routeCells.filter(({ col, row }) => /[+2]/.test(layout[row][col])).length;
+  const advancedCells = routeCells.filter(({ col, row }) => layout[row][col] === '2');
+  const advancedBody = advancedCells.filter(({ row }) => row <= EXPEDITION_STRATA.bodySouthRow).length;
+  const advancedTransition = advancedCells.filter(({ row }) => row >= EXPEDITION_STRATA.transitionNorthRow
+    && row <= EXPEDITION_STRATA.transitionSouthRow).length;
+  assert.ok(advancedTransition > 0 && advancedBody >= 3, 'The route must excavate both the transition and the advanced body');
   return {
-    hp: win.hp, wave: win.wave, towerKills: win.towerKills, routeSteps: route.length - 1, minedTiles,
+    hp: win.hp, wave: win.wave, towerKills: win.towerKills, routeSteps: route.length - 1,
+    minedTiles: minedTiles + Number(!fast), advancedTransition, advancedBody, visitedBiomes, firstDraw,
     preparingMs: timing.preparingMs, firstWaveSize, lingerWave: lingered.wave, lingerPressure: lingered.pressure,
   };
 }

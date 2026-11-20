@@ -4,9 +4,11 @@ import { chromium } from 'playwright-core';
 import { createServer, preview } from 'vite';
 import { MINING_CONFIG } from '../src/mining-config.ts';
 import { TerrainMap } from '../src/terrain.ts';
+import { runBuildDebugIsolationSmoke, runBuildRangeSmoke } from './browser-build-range.mjs';
+import { runCardFeedbackSmoke, runDestroyedTechFeedbackSmoke } from './browser-card-feedback.mjs';
 import { runDenseMapSmoke } from './browser-dense-map.mjs';
 import { runDefenseSmoke } from './browser-defense.mjs';
-import { runBiomeFogSmoke, runExpeditionSmoke, runResearchSmoke } from './browser-expedition.mjs';
+import { runBiomeFogSmoke, runExpeditionSmoke, runResearchSmoke, runStrataSeedSmoke } from './browser-expedition.mjs';
 import { runFix02MapSmoke, runFix02DefenseSmoke, runFix02RoundSmoke, runSynthesisSmoke } from './browser-fix02.mjs';
 import { runLossSmoke, runVictorySmoke } from './browser-goal.mjs';
 import { runLongMapSmoke } from './browser-long-map.mjs';
@@ -29,6 +31,56 @@ try {
   try {
     const url = `http://${host}:${address.port}`;
     const mode = development ? 'dev' : 'production';
+    if (process.argv.includes('--fix01-a')) {
+      await runCardFeedbackBrowserSmoke(browser, url, mode);
+    } else if (process.argv.includes('--fix01-b')) {
+      await runBuildRangeBrowserSmoke(browser, url, mode);
+      await withSmokePage(browser, { width: 1280, height: 900 },
+        (page) => runSynthesisSmoke(page, `${url}/?mode=defense&seed=12`));
+      console.log(`Edge smoke (${mode}, FIX01-B legacy defense): passed; original remote debug building and synthesis retained; no browser errors.`);
+    } else if (process.argv.includes('--fix01-c')) {
+      await runStrataBrowserSmoke(browser, url, mode);
+    } else {
+      await runStandardBrowserSmoke(browser, url, mode);
+      await runCardFeedbackBrowserSmoke(browser, url, mode);
+      await runBuildRangeBrowserSmoke(browser, url, mode);
+    }
+  } finally {
+    await browser.close();
+  }
+} finally {
+  await server.close();
+}
+
+async function runCardFeedbackBrowserSmoke(browser, url, mode) {
+  const viewport = { width: 1280, height: 900 };
+  await withSmokePage(browser, viewport, (page) => runCardFeedbackSmoke(page, `${url}/?mode=play&seed=1`));
+  console.log(`Edge smoke (${mode}, FIX01-A acquisition): passed; all three cards, highlights, movement and placement, insufficient funds, and seeded reset verified; no browser errors.`);
+  await withSmokePage(browser, viewport,
+    (page) => runDestroyedTechFeedbackSmoke(page, `${url}/?mode=play&seed=12&speed=test`));
+  console.log(`Edge smoke (${mode}, FIX01-A destroyed technology): passed; scheduled enemies destroyed the facility and visible manufacture denial preserved economy and cards; no browser errors.`);
+}
+
+async function runBuildRangeBrowserSmoke(browser, url, mode) {
+  const viewport = { width: 1280, height: 900 };
+  await withSmokePage(browser, viewport, (page) => runBuildRangeSmoke(page, `${url}/?mode=play&seed=12`));
+  console.log(`Edge smoke (${mode}, FIX01-B placement): passed; range and occupancy reasons, cardinal and diagonal use, preview, resize, edge, synthesis, and cross-seam placement verified; no browser errors.`);
+  await withSmokePage(browser, viewport,
+    (page) => runBuildDebugIsolationSmoke(page, `${url}/?mode=play&seed=12&debug=1`));
+  console.log(`Edge smoke (${mode}, FIX01-B debug isolation): passed; play mode debug controls cannot bypass range; no browser errors.`);
+}
+
+async function runStrataBrowserSmoke(browser, url, mode) {
+  const viewport = { width: 1280, height: 900 };
+  const scene = `${url}/?mode=play&seed=12`;
+  const reached = await withSmokePage(browser, viewport, (page) => runResearchSmoke(page, scene));
+  console.log(`Edge smoke (${mode}, P0-E / FIX01-C strata): passed; research, mixed visible transition, tool gate without cooldown, body excavation, persistence, and R verified; no browser errors.`);
+  console.log(JSON.stringify(reached));
+  await withSmokePage(browser, viewport, (page) => runStrataSeedSmoke(page, scene));
+  console.log(`Edge smoke (${mode}, FIX01-C strata seeds): passed; version four, same-seed reload, and new-seed round verified; no browser errors.`);
+}
+
+async function runStandardBrowserSmoke(browser, url, mode) {
     const dugTiles = await withSmokePage(browser, { width: 1440, height: 1060 },
       (page) => runSingleMapSmoke(page, `${url}/?map=single`));
     console.log(`Edge smoke (${mode}, single map): passed; real rapid clicks and cross-target cooldown, hold/release, target lock and chaining after clearing, interruption, and ready-tool reset verified; ${dugTiles} tiles mined on the route; no browser errors.`);
@@ -64,9 +116,7 @@ try {
       (page) => runExpeditionSmoke(page, `${url}/?mode=play&seed=12&debug=1`));
     console.log(`Edge smoke (${mode}, P0-D expedition): passed; card placement and synthesis, separate controls, timed production, seeded manufacture, tower reward, and round reset verified; no browser errors.`);
 
-    await withSmokePage(browser, { width: 1280, height: 900 },
-      (page) => runResearchSmoke(page, `${url}/?mode=play&seed=12`));
-    console.log(`Edge smoke (${mode}, P0-E research): passed; production-funded research, tier gate, damage persistence, seam crossing, and same-seed reset verified; no browser errors.`);
+    await runStrataBrowserSmoke(browser, url, mode);
 
     await withSmokePage(browser, { width: 1280, height: 900 },
       (page) => runBiomeFogSmoke(page, `${url}/?mode=play&seed=12`));
@@ -87,11 +137,6 @@ try {
       console.log(`Edge smoke (${mode}, P0-G normal timing): passed; normal preparation and wave timing, north goal, and terminal stop verified; no browser errors.`);
       console.log(JSON.stringify(normalVictory));
     }
-  } finally {
-    await browser.close();
-  }
-} finally {
-  await server.close();
 }
 
 async function withSmokePage(browser, viewport, run) {

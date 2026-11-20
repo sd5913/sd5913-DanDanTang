@@ -25,7 +25,7 @@ const landscape = play && world ? generateExpeditionBiomes(world.layout, world.e
 let layout: readonly string[];
 let phase: string;
 if (world) {
-  layout = landscape ? addExpeditionApproach(addExpeditionTiers(landscape.layout)) : world.layout;
+  layout = landscape ? addExpeditionApproach(addExpeditionTiers(landscape.layout, world.effectiveSeed)) : world.layout;
   phase = play ? "P0-G" : "P0-B FIX02";
 } else if (defense || fixture === "fix01") {
   layout = defense ? DEFENSE_LAYOUT : DENSE_LONG_MAP_LAYOUT;

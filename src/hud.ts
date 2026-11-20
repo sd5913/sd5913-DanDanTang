@@ -16,7 +16,7 @@ const DIG_FAILURE_MESSAGES: Record<DigFailure, string> = {
   rock: "岩石不可挖掘",
   water: "水域不可挖掘",
   empty: "目标格已经是空地",
-  "tool-level": "需要更高等级的工具",
+  "tool-level": "需要二级挖掘工具",
   "invalid-damage": "工具伤害无效",
 };
 
@@ -69,7 +69,7 @@ export class DebugHud {
       return;
     }
     const hp = state.terrain === "dirt" ? ` | HP ${state.hp}/${state.maxHp}` : "";
-    const tier = state.terrain === "dirt" && state.terrainLevel > 1 ? ` | Lv.${state.terrainLevel}` : "";
+    const tier = state.terrain === "dirt" ? ` | Lv.${state.terrainLevel}` : "";
     writeStatus(this.hover, `${TERRAIN_NAMES[state.terrain]} ${coordinates(cell)}${hp}${tier}`);
   }
 

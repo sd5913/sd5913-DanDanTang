@@ -1,4 +1,5 @@
 import type Phaser from "phaser";
+import type { PlacementPreview } from "./build-placement.ts";
 import { PLAYER_HALF_SIZE, TILE_SIZE } from "./player.ts";
 import type { Point } from "./player.ts";
 import { CHUNK_ROWS } from "./terrain.ts";
@@ -18,6 +19,7 @@ export class GridRenderer {
   private readonly terrainLayer: Phaser.GameObjects.Layer;
   private readonly gridLayer: Phaser.GameObjects.Layer;
   private readonly cursor: Phaser.GameObjects.Rectangle;
+  private readonly buildCursor: Phaser.GameObjects.Rectangle;
   private readonly resident = new Map<number, ChunkSlot>();
   private readonly spare: ChunkSlot[] = [];
   private visibleRows: readonly number[] = [];
@@ -34,6 +36,11 @@ export class GridRenderer {
       .setOrigin(0)
       .setStrokeStyle(1, 0xf1f5e4)
       .setDepth(2)
+      .setVisible(false);
+
+    this.buildCursor = scene.add.rectangle(0, 0, TILE_SIZE - 2, TILE_SIZE - 2)
+      .setOrigin(0)
+      .setDepth(4.5)
       .setVisible(false);
 
     const playerSize = PLAYER_HALF_SIZE * 2;
@@ -154,6 +161,15 @@ export class GridRenderer {
   showHover(cell: GridPosition | null): void {
     this.cursor.setVisible(cell !== null);
     if (cell) this.cursor.setPosition(cell.col * TILE_SIZE + 1, cell.row * TILE_SIZE + 1);
+  }
+
+  showBuildPreview(cell: GridPosition | null, state?: PlacementPreview): void {
+    this.buildCursor.setVisible(cell !== null && state !== undefined);
+    if (!cell || !state) return;
+    const color = state === "valid" ? 0x80dfb5 : 0xff928b;
+    this.buildCursor.setPosition(cell.col * TILE_SIZE + 1, cell.row * TILE_SIZE + 1)
+      .setFillStyle(color, 0.15)
+      .setStrokeStyle(2, color);
   }
 
   showGrid(visible: boolean): void {

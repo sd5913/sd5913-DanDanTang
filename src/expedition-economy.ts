@@ -5,6 +5,7 @@ import type { GridPosition, TerrainMap } from "./terrain.ts";
 
 export const CARD_KINDS = Object.freeze(["wall", "tower", "economy"] as const);
 export type CardKind = typeof CARD_KINDS[number];
+export type CardDrawFailure = "technology-destroyed" | "insufficient-funds";
 type CardCounts = Readonly<Record<CardKind, number>>;
 
 export const ECONOMY_PROTOTYPE = Object.freeze({
@@ -81,8 +82,13 @@ export class ExpeditionEconomy {
     }
   }
 
+  get drawFailure(): CardDrawFailure | undefined {
+    if (!this.hasTechnology) return "technology-destroyed";
+    return this.#balance < ECONOMY_PROTOTYPE.drawCost ? "insufficient-funds" : undefined;
+  }
+
   drawCard(): CardKind | undefined {
-    if (!this.hasTechnology || this.#balance < ECONOMY_PROTOTYPE.drawCost) return undefined;
+    if (this.drawFailure) return undefined;
     this.#drawState = (Math.imul(this.#drawState, 1_664_525) + 1_013_904_223) >>> 0;
     let ticket = Math.floor(this.#drawState / 0x1_0000_0000 * DRAW_WEIGHT);
     for (const kind of CARD_KINDS) {

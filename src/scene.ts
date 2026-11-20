@@ -60,7 +60,9 @@ export class GridScene extends Phaser.Scene {
     const keyboard = this.input.keyboard;
     if (!keyboard) throw new Error("Keyboard input is unavailable");
     this.keys = keyboard.addKeys("W,A,S,D,R,G", false) as typeof this.keys;
-    if (this.defenseOptions) this.defense = new DefenseDebug(this, this.terrain, this.player, this.defenseOptions);
+    if (this.defenseOptions) {
+      this.defense = new DefenseDebug(this, this.terrain, this.player, this.defenseOptions, this.isVisible);
+    }
     this.input.on(Phaser.Input.Events.POINTER_MOVE, this.inspectPointer, this);
     this.input.on(Phaser.Input.Events.POINTER_DOWN, this.beginMining, this);
     this.input.on(Phaser.Input.Events.POINTER_UP, this.releasePointer, this);
@@ -179,7 +181,8 @@ export class GridScene extends Phaser.Scene {
       this.refreshPointerAfterResize = false;
       if (this.hovered || (this.wide && this.input.isOver)) this.inspectPointer(this.input.mousePointer);
     }
-    this.defense?.render(view, this.hovered, this.isVisible);
+    const placement = this.defense?.render(view, this.hovered);
+    this.boardRenderer.showBuildPreview(this.hovered, placement);
     this.fogRenderer?.render(view);
   }
 
@@ -213,7 +216,7 @@ export class GridScene extends Phaser.Scene {
       || document.hidden || !document.hasFocus() || this.game.isPaused) return;
     const target = this.pointerCell(pointer);
     if (!target) return;
-    if (this.defense?.placeSelectedCard(target, this.isVisible(target))) {
+    if (this.defense?.placeSelectedCard(target)) {
       this.stopMining();
       return;
     }

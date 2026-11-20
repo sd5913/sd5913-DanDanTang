@@ -99,6 +99,7 @@ h1 {
 }
 
 .goal {
+  order: -2;
   padding: 0.625rem 0.75rem;
   border-left: 3px solid #62bca4;
   background: #20332f;
@@ -108,12 +109,41 @@ h1 {
 .goal p { color: #cee1dd; }
 .goal p[data-reached="true"], #round-state[data-phase="won"] { color: var(--mint); font-weight: 700; }
 #round-state:is([data-phase="attacking"], [data-phase="lost"]) { color: #f0a39b; font-weight: 700; }
-#round-panel { order: -1; }
+#round-panel { order: -3; }
+#expedition-panel { order: -1; }
 #round-panel dl { display: grid; grid-template-columns: 1fr 1fr; gap: 0.25rem 0.5rem; margin-top: 0.375rem; }
 #round-panel dl > div { display: flex; justify-content: space-between; gap: 0.25rem; }
 #round-panel dt { color: var(--muted); }
 #round-panel dd { font-variant-numeric: tabular-nums; }
 #expedition-debug[hidden] { display: none; }
+
+.card-draw-result[data-card] {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin-block: 0.4rem;
+  padding: 0.4rem 0.5rem;
+  border: 1px solid #d2b47e;
+  border-radius: 0.25rem;
+  background: #302a1e;
+  color: #ffe5b4;
+  font-weight: 650;
+}
+
+#card-draw-symbol { flex: none; }
+.card-draw-reason { color: #f0bda5; }
+.card-draw-summary { color: var(--muted); }
+.defense-controls button[data-count="0"] { color: var(--muted); }
+
+.build-preview {
+  margin-top: 0.375rem;
+  padding: 0.25rem 0.5rem;
+  border-left: 2px solid currentColor;
+}
+
+.build-preview[data-state="valid"] { color: #a3edcc; }
+.build-preview[data-state="invalid"] { color: #ffb1aa; }
+.defense-controls button[data-drawn="true"] { box-shadow: 0 0 0 2px #eac37f; }
 
 .readout dl, .controls { display: grid; gap: 0.375rem; }
 .readout dl > div, .controls > div { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; }

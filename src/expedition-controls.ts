@@ -1,9 +1,10 @@
 import type Phaser from "phaser";
 import type { BuildingKind } from "./buildings.ts";
 import { BIOME_NAMES } from "./biome-effects.ts";
+import type { PlacementFailure, PlacementPreview } from "./build-placement.ts";
 import type { BiomeId } from "./expedition-biomes.ts";
 import { CARD_KINDS, ECONOMY_PROTOTYPE, ExpeditionEconomy, TECHNOLOGY_PROTOTYPE } from "./expedition-economy.ts";
-import type { CardKind } from "./expedition-economy.ts";
+import type { CardDrawFailure, CardKind } from "./expedition-economy.ts";
 import type { ExpeditionPhase, ExpeditionRound } from "./expedition-round.ts";
 import type { GridPosition, TerrainMap } from "./terrain.ts";
 
@@ -26,17 +27,42 @@ const PHASE_NAMES: Record<ExpeditionPhase, string> = {
   won: "获胜 · 已抵达北端目标", lost: "战败 · 玩家生命耗尽",
 };
 
+const CARD_DRAW_FEEDBACK_MS = 1_750;
+const CARD_SYMBOLS: Record<CardKind, string> = { wall: "▦", tower: "▲", economy: "◆" };
+const DRAW_FAILURE_LABELS: Record<CardDrawFailure | "round-ended", string> = {
+  "technology-destroyed": "科技设施已损毁",
+  "insufficient-funds": `经济不足，需要 ${ECONOMY_PROTOTYPE.drawCost} 经济`,
+  "round-ended": "本局已结束",
+};
+
+const PLACEMENT_FAILURE_LABELS: Record<PlacementFailure, string> = {
+  "round-ended": "本局已结束，无法建造",
+  "out-of-bounds": "目标格超出地图边界",
+  "player-cell": "不能在玩家脚下建造",
+  "out-of-range": "距离过远，只能在周围一格建造",
+  "not-visible": "目标格当前不可见",
+  reserved: "该格保留给地图目标、出兵点或科技设施",
+  terrain: "地形不可建造，需要空地",
+  occupied: "该格已有建筑",
+  "player-overlap": "玩家仍与该格重叠，请让开后建造",
+  "enemy-occupied": "该格被敌人占用",
+  "out-of-stock": "对应建筑卡片不足",
+};
+
 interface ExpeditionActions {
   readonly debug: boolean;
   spawnEnemy(): void;
   spawnStress(count: number): void;
-  canRebuild(cell: GridPosition): boolean;
+  checkPlacement(cell: GridPosition, kind: CardKind | "technology"): PlacementFailure | undefined;
 }
 
 export class ExpeditionControls {
   readonly economy: ExpeditionEconomy;
+  private readonly checkPlacement: ExpeditionActions["checkPlacement"];
   private selected?: CardKind;
   private finished = false;
+  private recentDraw?: { readonly card: CardKind; readonly timer: number };
+  private readonly drawnCards: Record<CardKind, number> = { wall: 0, tower: 0, economy: 0 };
   private readonly state = field("round-state");
   private readonly time = field("round-time");
   private readonly playerHp = field("player-hp");
@@ -48,10 +74,16 @@ export class ExpeditionControls {
   private readonly cards = new Map(CARD_KINDS.map((kind) => [kind, field<HTMLButtonElement>(`card-${kind}`)]));
   private readonly balance = field("economy-balance");
   private readonly makeCard = field<HTMLButtonElement>("make-card");
+  private readonly drawResult = field("card-draw-result");
+  private readonly drawSymbol = field("card-draw-symbol");
+  private readonly drawText = field("card-draw-text");
+  private readonly drawReason = field("card-draw-reason");
+  private readonly drawSummary = field("card-draw-summary");
   private readonly tool = field("tool-level");
   private readonly research = field<HTMLButtonElement>("research-tool");
   private readonly rebuild = field<HTMLButtonElement>("rebuild-technology");
   private readonly status = field("expedition-feedback");
+  private readonly placementPreview = field("build-preview");
   private readonly building = field("expedition-building");
   private readonly biome = field("expedition-biome");
 
@@ -59,6 +91,7 @@ export class ExpeditionControls {
     scene: Phaser.Scene, map: TerrainMap, seed: number, round: ExpeditionRound, actions: ExpeditionActions,
   ) {
     this.economy = new ExpeditionEconomy(map, seed);
+    this.checkPlacement = actions.checkPlacement;
     const events = new AbortController();
     const options = { signal: events.signal };
     const panel = field("expedition-panel");
@@ -70,8 +103,9 @@ export class ExpeditionControls {
     this.makeCard.textContent = `制造卡牌（${ECONOMY_PROTOTYPE.drawCost} 经济）`;
     this.research.textContent = `研发 Lv.2 工具（${TECHNOLOGY_PROTOTYPE.researchCost} 经济）`;
     this.makeCard.addEventListener("click", () => {
-      const card = this.economy.drawCard();
-      if (card) this.showFeedback(`已制造${BUILDING_NAMES[card]}卡`);
+      const before = this.economy.cards;
+      const card = this.finished ? undefined : this.economy.drawCard();
+      if (card) this.showDrawFeedback(card, before[card], this.economy.cards[card]);
       this.refresh();
     }, options);
     this.research.addEventListener("click", () => {
@@ -79,10 +113,11 @@ export class ExpeditionControls {
       this.refresh();
     }, options);
     this.rebuild.addEventListener("click", () => {
-      if (actions.canRebuild(this.economy.technologyCell) && this.economy.rebuildTechnology()) {
+      const reason = this.checkPlacement(this.economy.technologyCell, "technology");
+      if (!reason && this.economy.rebuildTechnology()) {
         this.showFeedback("已重建科技设施");
       } else {
-        this.showFeedback("科技设施原址暂被占用");
+        this.showFeedback(reason ? PLACEMENT_FAILURE_LABELS[reason] : "科技设施原址暂被占用");
       }
       this.refresh();
     }, options);
@@ -106,26 +141,57 @@ export class ExpeditionControls {
     }, options);
     scene.events.once("shutdown", () => {
       events.abort();
+      this.clearDrawFeedback();
+      write(this.drawSummary, "");
+      this.previewPlacement(null);
       panel.hidden = true;
       roundPanel.hidden = true;
     });
     this.refresh();
   }
 
-  get hasSelection(): boolean { return this.selected !== undefined; }
-
-  placeSelected(cell: GridPosition, canPlace: boolean): void {
-    if (!this.selected) return;
-    const name = BUILDING_NAMES[this.selected];
-    const building = canPlace && this.economy.placeCard(this.selected, cell);
-    if (!building) {
-      this.showFeedback("只能在未被占用的空地建造");
-      return;
+  previewPlacement(cell: GridPosition | null): PlacementPreview | undefined {
+    const { placementPreview } = this;
+    if (!cell || !this.selected) {
+      if (!placementPreview.hidden) {
+        placementPreview.hidden = true;
+        delete placementPreview.dataset.state;
+        delete placementPreview.dataset.reason;
+        write(placementPreview, "");
+      }
+      return undefined;
     }
+
+    const reason = this.checkPlacement(cell, this.selected);
+    const state = reason ? "invalid" : "valid";
+    if (placementPreview.dataset.state !== state) placementPreview.dataset.state = state;
+    if (reason && placementPreview.dataset.reason !== reason) placementPreview.dataset.reason = reason;
+    if (!reason && placementPreview.dataset.reason) delete placementPreview.dataset.reason;
+    write(placementPreview, reason ? PLACEMENT_FAILURE_LABELS[reason] : `可建造${BUILDING_NAMES[this.selected]}`);
+    if (placementPreview.hidden) placementPreview.hidden = false;
+    return state;
+  }
+
+  placeSelected(cell: GridPosition): boolean {
+    const selected = this.selected;
+    if (!selected) return false;
+    const reason = this.checkPlacement(cell, selected);
+    if (reason) {
+      this.showFeedback(PLACEMENT_FAILURE_LABELS[reason]);
+      return true;
+    }
+
+    const building = this.economy.placeCard(selected, cell);
+    if (!building) {
+      this.showFeedback("当前无法在该格建造");
+      return true;
+    }
+    const name = BUILDING_NAMES[selected];
     const position = `(${building.cell.col}, ${building.cell.row})`;
     this.showFeedback(building.level === 2 ? `已合成${name} Lv.2 ${position}` : `已建造${name} ${position}`);
-    if (!this.economy.cards[this.selected]) this.selected = undefined;
+    if (!this.economy.cards[selected]) this.selected = undefined;
     this.refresh();
+    return true;
   }
 
   showBuilding(text: string): void {
@@ -154,6 +220,7 @@ export class ExpeditionControls {
   }
 
   refresh(): void {
+    if (!this.selected) this.previewPlacement(null);
     write(this.balance, String(this.economy.balance));
     const cards = this.economy.cards;
     for (const [kind, button] of this.cards) {
@@ -162,13 +229,15 @@ export class ExpeditionControls {
         button.dataset.count = count;
         write(button, `${BUILDING_NAMES[kind]} ${count}`);
       }
-      const disabled = this.finished || cards[kind] === 0;
+      const disabled = this.finished;
       if (button.disabled !== disabled) button.disabled = disabled;
       const pressed = String(this.selected === kind);
       if (button.getAttribute("aria-pressed") !== pressed) button.setAttribute("aria-pressed", pressed);
     }
-    const canDraw = !this.finished && this.economy.hasTechnology && this.economy.balance >= ECONOMY_PROTOTYPE.drawCost;
+    const drawFailure = this.finished ? "round-ended" : this.economy.drawFailure;
+    const canDraw = drawFailure === undefined;
     if (this.makeCard.disabled === canDraw) this.makeCard.disabled = !canDraw;
+    write(this.drawReason, drawFailure ? DRAW_FAILURE_LABELS[drawFailure] : "");
     const { toolLevel, hasTechnology, balance } = this.economy;
     write(this.tool, `Lv.${toolLevel}`);
     const canResearch = !this.finished && toolLevel < 2 && hasTechnology && balance >= TECHNOLOGY_PROTOTYPE.researchCost;
@@ -179,9 +248,35 @@ export class ExpeditionControls {
     if (this.stress.disabled !== this.finished) this.stress.disabled = this.finished;
   }
 
+  private showDrawFeedback(card: CardKind, before: number, after: number): void {
+    this.clearDrawFeedback();
+    this.drawResult.dataset.card = card;
+    this.cards.get(card)!.dataset.drawn = "true";
+    write(this.drawSymbol, CARD_SYMBOLS[card]);
+    write(this.drawText, `获得：一级${BUILDING_NAMES[card]}卡 ×${after - before} · 库存：${before} → ${after}`);
+    this.drawnCards[card] += after - before;
+    const totals = CARD_KINDS.map((kind) => `${BUILDING_NAMES[kind]} ${this.drawnCards[kind]}`);
+    write(this.drawSummary, `本局获得 · ${totals.join(" · ")}`);
+    const timer = window.setTimeout(() => this.clearDrawFeedback(), CARD_DRAW_FEEDBACK_MS);
+    this.recentDraw = { card, timer };
+  }
+
+  private clearDrawFeedback(): void {
+    if (!this.recentDraw) return;
+    window.clearTimeout(this.recentDraw.timer);
+    delete this.cards.get(this.recentDraw.card)!.dataset.drawn;
+    delete this.drawResult.dataset.card;
+    write(this.drawSymbol, "");
+    write(this.drawText, "");
+    this.recentDraw = undefined;
+  }
+
   reset(): void {
     this.economy.reset();
     this.selected = undefined;
+    this.clearDrawFeedback();
+    for (const card of CARD_KINDS) this.drawnCards[card] = 0;
+    write(this.drawSummary, "");
     this.showFeedback("请选择建筑卡，或按住左键挖掘");
     this.refresh();
   }

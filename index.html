@@ -71,10 +71,16 @@
               <button id="card-economy" type="button" aria-pressed="false"></button>
             </div>
             <div class="defense-controls">
-              <button id="make-card" type="button">制造卡牌</button>
+              <button id="make-card" type="button" aria-describedby="card-draw-reason">制造卡牌</button>
               <button id="research-tool" type="button">研发工具</button>
               <button id="rebuild-technology" type="button" hidden>重建科技设施</button>
             </div>
+            <p id="card-draw-result" class="card-draw-result" role="status">
+              <span id="card-draw-symbol" aria-hidden="true"></span>
+              <span id="card-draw-text"></span>
+            </p>
+            <p id="card-draw-reason" class="card-draw-reason" aria-live="polite"></p>
+            <p id="card-draw-summary" class="card-draw-summary"></p>
             <div id="expedition-debug" class="defense-controls" hidden>
               <button id="expedition-spawn" type="button">调试出兵</button>
               <label>同时生成 <select id="expedition-stress-count">
@@ -84,6 +90,7 @@
             </div>
             <p id="expedition-building">—</p>
             <p id="expedition-feedback" class="dig-result" aria-live="polite">请选择建筑卡，或按住左键挖掘</p>
+            <p id="build-preview" class="build-preview" role="status" hidden></p>
           </section>
 
           <section id="defense-panel" aria-labelledby="defense-title" hidden>

@@ -18,7 +18,7 @@ const cell = (col, row) => ({ col, row });
 function createPlayModel(mapSeed = seed) {
   const world = generateExpeditionWorld(mapSeed);
   const landscape = generateExpeditionBiomes(world.layout, world.effectiveSeed);
-  const layout = addExpeditionApproach(addExpeditionTiers(landscape.layout));
+  const layout = addExpeditionApproach(addExpeditionTiers(landscape.layout, world.effectiveSeed));
   const map = new TerrainMap(layout, { biomes: landscape.biomes });
   const economy = new ExpeditionEconomy(map, world.effectiveSeed);
   const player = new Player(map.spawn);
