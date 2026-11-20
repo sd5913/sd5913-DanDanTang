@@ -1,4 +1,4 @@
-import { BuildingStore } from "./buildings.ts";
+import { BUILDING_SYNTHESIS_CONFIG, BuildingStore } from "./buildings.ts";
 import type { Building, BuildingKind, WallImpact } from "./buildings.ts";
 import { MINING_CONFIG } from "./mining-config.ts";
 import { TEST_MAP_LAYOUT } from "./test-map.ts";
@@ -73,6 +73,10 @@ const MARKER_CELLS = new Map<string, TerrainCell>([
 
 type TerrainChunk = TerrainCell[][];
 
+interface TerrainOptions {
+  readonly autoMerge?: boolean;
+}
+
 function chunkRowFor(row: number): number {
   return Math.floor(row / CHUNK_ROWS);
 }
@@ -85,11 +89,13 @@ export class TerrainMap implements TerrainReader {
   readonly #layout: readonly string[];
   readonly #initialChunks: readonly TerrainChunk[];
   readonly #buildings: BuildingStore;
+  readonly #autoMerge: boolean;
   #chunks: TerrainChunk[];
   #revision = 0;
 
-  constructor(layout: readonly string[] = TEST_MAP_LAYOUT) {
+  constructor(layout: readonly string[] = TEST_MAP_LAYOUT, options: TerrainOptions = {}) {
     this.#layout = [...layout];
+    this.#autoMerge = options.autoMerge ?? BUILDING_SYNTHESIS_CONFIG.autoMerge;
     this.rows = this.#layout.length;
     this.columns = this.#layout[0]?.length ?? 0;
     if (this.columns === 0 || this.rows % CHUNK_ROWS !== 0 || this.#layout.some((row) => row.length !== this.columns)) {
@@ -179,8 +185,17 @@ export class TerrainMap implements TerrainReader {
   placeBuilding(kind: BuildingKind, position: GridPosition, hp = 50): Building | undefined {
     if (!this.isInside(position) || this.cellRow(position.row)[position.col].terrain !== "empty") return undefined;
     const building = this.#buildings.place(kind, position, hp);
-    if (building) this.#revision += 1;
-    return building;
+    if (!building) return undefined;
+    const merged = this.#autoMerge ? this.#buildings.synthesize(position) : undefined;
+    this.#revision += 1;
+    return merged ?? building;
+  }
+
+  synthesizeBuilding(position: GridPosition): Building | undefined {
+    if (!this.isInside(position)) return undefined;
+    const merged = this.#buildings.synthesize(position);
+    if (merged) this.#revision += 1;
+    return merged;
   }
 
   removeBuilding(position: GridPosition, expectedId?: string): Building | undefined {

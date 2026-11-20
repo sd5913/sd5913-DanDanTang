@@ -6,7 +6,7 @@ import { MINING_CONFIG } from '../src/mining-config.ts';
 import { TerrainMap } from '../src/terrain.ts';
 import { runDenseMapSmoke } from './browser-dense-map.mjs';
 import { runDefenseSmoke } from './browser-defense.mjs';
-import { runFix02MapSmoke, runFix02DefenseSmoke, runFix02RoundSmoke } from './browser-fix02.mjs';
+import { runFix02MapSmoke, runFix02DefenseSmoke, runFix02RoundSmoke, runSynthesisSmoke } from './browser-fix02.mjs';
 import { runLongMapSmoke } from './browser-long-map.mjs';
 
 const host = '127.0.0.1';
@@ -53,6 +53,10 @@ try {
 
     await withSmokePage(browser, { width: 1280, height: 900 }, (page) => runFix02RoundSmoke(page, url));
     console.log(`Edge smoke (${mode}, FIX02 rounds): passed; automatic seed URL, reproducible reload, same-seed reset, fresh round, and invalid seed normalization verified; no browser errors.`);
+
+    await withSmokePage(browser, { width: 1280, height: 900 },
+      (page) => runSynthesisSmoke(page, `${url}/?mode=defense&seed=12`));
+    console.log(`Edge smoke (${mode}, P0-C synthesis): passed; six-building bridge, oldest survivor, three released cells, two unchanged buildings, rendering, movement, and reset verified; no browser errors.`);
   } finally {
     await browser.close();
   }

@@ -3,6 +3,7 @@ import { performance } from "node:perf_hooks";
 import test from "node:test";
 import { DEFENSE_LAYOUT, DEFENSE_TARGET, ENEMY_ENTRY } from "../src/defense-map.ts";
 import { DEFENSE_CONFIG, DefenseSimulation } from "../src/defense-simulation.ts";
+import { EnemyNavigation } from "../src/enemy-navigation.ts";
 import { GENERATED_ENEMY_ENTRY, GENERATED_GOAL, generateExpeditionMap } from "../src/generated-map.ts";
 import { MINING_CONFIG } from "../src/mining-config.ts";
 import { TerrainMap } from "../src/terrain.ts";
@@ -11,6 +12,14 @@ const gate = { col: 11, row: 89 };
 const gateApproach = { col: 11, row: 90 };
 const wallCell = { col: 11, row: 87 };
 const towerCell = { col: 12, row: 94 };
+const synthesisLayout = [
+  "#########", "#S.....G#", "###..####", ...Array(29).fill("#########"),
+];
+const synthesisGate = { col: 3, row: 1 };
+const synthesisAnnex = { col: 3, row: 2 };
+const synthesisCorner = { col: 4, row: 2 };
+const synthesisLast = { col: 4, row: 1 };
+const synthesisGoal = { col: 7, row: 1 };
 
 function openGate(map) {
   assert.equal(map.applyDigDamage(gateApproach, gate, MINING_CONFIG.dirtMaxHp).cleared, true);
@@ -100,6 +109,66 @@ test("AI-08: automatic tower shots honor cooldown and report kills separately fr
     type: "towerKill", enemyId, towerId: tower.id,
   })));
   assert.deepEqual(events.filter((event) => event.type === "wallImpact").map((event) => event.enemyId), [wallAttackerId]);
+});
+
+test("P0-C: auto-merging a group releases its route and invalidates cached wall actions", () => {
+  const map = new TerrainMap(synthesisLayout);
+  const anchor = map.placeBuilding("wall", synthesisAnnex, 8);
+  const gate = map.placeBuilding("wall", synthesisGate, 6);
+  map.placeBuilding("wall", synthesisCorner, 3);
+  const approach = { col: 2, row: 1 };
+  const navigation = new EnemyNavigation(map);
+  assert.deepEqual(navigation.next(approach, synthesisGoal), { kind: "wall", cell: synthesisGate, wallId: gate.id });
+  const priorSearchCount = navigation.searchCount;
+  const priorRevision = map.revision;
+
+  const merged = map.placeBuilding("wall", synthesisLast, 4);
+  assert.equal(merged.id, anchor.id);
+  assert.equal(merged.hp, 8);
+  assert.equal(merged.level, 2);
+  assert.equal(map.revision, priorRevision + 1);
+  assert.deepEqual(navigation.next(approach, synthesisGoal), { kind: "move", cell: synthesisGate });
+  assert.ok(navigation.searchCount > priorSearchCount);
+  for (const cell of [synthesisGate, synthesisCorner, synthesisLast]) {
+    assert.equal(map.getCell(cell).buildingId, null);
+    assert.equal(map.isWalkable(cell), true);
+  }
+  assert.equal(map.impactWall(synthesisGate, gate.id, 1), undefined);
+});
+
+test("P0-C: two enemies reaching a retained 1 HP level-two gate consume only its first valid impact", () => {
+  const map = new TerrainMap(synthesisLayout, { autoMerge: false });
+  const gate = map.placeBuilding("wall", synthesisGate, 1);
+  for (const cell of [synthesisAnnex, synthesisCorner, synthesisLast]) map.placeBuilding("wall", cell);
+  assert.deepEqual([...map.getBuildings()].map(({ level }) => level), [1, 1, 1, 1]);
+  assert.equal(map.synthesizeBuilding(synthesisGate).level, 2);
+  const events = [];
+  const simulation = new DefenseSimulation(map, map.spawn, synthesisGoal, (event) => events.push(event));
+  simulation.spawn(2, 1);
+  const [attacker, survivor] = [...simulation.enemies];
+  simulation.step(DEFENSE_CONFIG.travelMs * 8);
+  assert.deepEqual(events.filter((event) => event.type === "wallImpact"), [{
+    type: "wallImpact", enemyId: attacker.id, wallId: gate.id, damage: 1, hp: 0, destroyed: true,
+  }]);
+  assert.deepEqual([...simulation.enemies].map(({ id }) => id), [survivor.id]);
+  assert.equal(simulation.counters.buildingContacts, 1);
+});
+
+test("P0-C: the retained tower keeps its current cooldown after upgrading", () => {
+  const map = new TerrainMap(synthesisLayout);
+  const tower = map.placeBuilding("tower", synthesisAnnex);
+  const simulation = new DefenseSimulation(map, map.spawn, synthesisGoal);
+  simulation.spawn(2, 1);
+  simulation.step(1);
+  assert.equal(simulation.counters.towerKills, 1);
+  for (const cell of [synthesisGate, synthesisCorner, synthesisLast]) map.placeBuilding("tower", cell);
+  const merged = map.getBuilding(synthesisAnnex);
+  assert.equal(merged.id, tower.id);
+  assert.equal(merged.level, 2);
+  simulation.step(DEFENSE_CONFIG.towerIntervalMs - 1);
+  assert.equal(simulation.counters.towerKills, 1);
+  simulation.step(1);
+  assert.equal(simulation.counters.towerKills, 2);
 });
 
 test("AI-09: the world simulation crosses both seams with no viewport and stays at the target approach", () => {

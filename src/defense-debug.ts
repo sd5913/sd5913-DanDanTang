@@ -90,6 +90,7 @@ export class DefenseDebug {
       } else {
         graphics.fillStyle(0x73d4cc).fillTriangle(x, y - 9, x + 9, y + 8, x - 9, y + 8);
       }
+      if (building.level === 2) graphics.lineStyle(1, 0x8de6ca).strokeRect(x - 11, y - 11, 22, 22);
     }
     for (let i = labelCount; i < this.labels.length; i += 1) this.labels[i].setVisible(false);
 
@@ -123,7 +124,8 @@ export class DefenseDebug {
     this.showStats(active, visible, Number.isFinite(northRow) ? northRow : -1, unreachable);
     const building = cell && this.map.getBuilding(cell);
     const name = building?.kind === "wall" ? "城墙" : "测试塔";
-    write(this.hover, building ? `${name} ${coordinates(building.cell)} · ${building.hp} HP` : "—");
+    const level = building?.level === 2 ? " · Lv.2" : "";
+    write(this.hover, building ? `${name} ${coordinates(building.cell)} · ${building.hp} HP${level}` : "—");
   }
 
   reset(): void {
@@ -146,7 +148,13 @@ export class DefenseDebug {
     }
     const building = this.map.placeBuilding(kind, cell, kind === "wall" ? 50 : 1);
     const name = kind === "wall" ? "城墙" : "测试塔";
-    write(this.status, building ? `已建造${name} ${coordinates(cell)}` : "只能在未占用的空地建造");
+    if (!building) {
+      write(this.status, "只能在未占用的空地建造");
+      return;
+    }
+    write(this.status, building.level === 2
+      ? `已合成${name} Lv.2 ${coordinates(building.cell)}`
+      : `已建造${name} ${coordinates(cell)}`);
   }
 
   private overlapsPlayer(cell: GridPosition): boolean {

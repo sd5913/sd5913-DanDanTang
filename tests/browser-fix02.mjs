@@ -352,3 +352,56 @@ export async function runFix02RoundSmoke(page, url) {
   assert.equal((await page.goto(invalidUrl.href))?.status(), 200);
   await assertRound(DEFAULT_MAP_SEED, 3);
 }
+
+export async function runSynthesisSmoke(page, url) {
+  const game = await openWideGame(page, url);
+  const building = page.locator('#defense-hover');
+  const feedback = page.locator('#defense-feedback');
+  const wallCell = (col) => ({ col, row: 88 });
+  const earliest = wallCell(17);
+  const bridge = wallCell(19);
+  const leftNeighbors = [wallCell(16), wallCell(18)];
+  const untouched = [wallCell(21), wallCell(20)];
+  const vacated = [...leftNeighbors, bridge];
+  const beforeBridge = [earliest, ...leftNeighbors, ...untouched];
+  const cells = [...beforeBridge, bridge];
+  const emptyPixels = new Map();
+
+  async function buildingAt(cell) {
+    await game.inspect(cell, '空地');
+    await page.clock.runFor(32);
+    return building.textContent();
+  }
+
+  for (const cell of cells) {
+    assert.equal(await buildingAt(cell), '—');
+    emptyPixels.set(cell.col, await game.tilePixel(cell));
+  }
+  for (const cell of beforeBridge) {
+    await game.inspect(cell, '空地');
+    await game.holdKey('KeyB', () => page.clock.runFor(48));
+    assert.equal(await building.textContent(), `城墙 ${coordinates(cell)} · 50 HP`);
+  }
+
+  await game.inspect(bridge, '空地');
+  await game.holdKey('KeyB', () => page.clock.runFor(48));
+  assert.equal(await feedback.textContent(), `已合成城墙 Lv.2 ${coordinates(earliest)}`);
+  assert.match(await buildingAt(earliest), /^城墙 \(17, 88\) · \d+ HP · Lv\.2$/);
+  assert.notDeepEqual(await game.tilePixel(earliest), emptyPixels.get(earliest.col),
+    'The upgraded building must remain visible at the earliest position');
+
+  for (const cell of vacated) {
+    assert.equal(await buildingAt(cell), '—', `Synthesis must release ${coordinates(cell)}`);
+    assertSameColor(await game.tilePixel(cell), emptyPixels.get(cell.col),
+      `Synthesis must restore the cleared tile drawing at ${coordinates(cell)}`);
+  }
+  for (const cell of untouched) {
+    assert.equal(await buildingAt(cell), `城墙 ${coordinates(cell)} · 50 HP`);
+  }
+  await game.walkTo(bridge);
+  assert.deepEqual(await game.position(), bridge, 'The released bridge tile must be walkable');
+
+  await game.holdKey('KeyR', () => page.clock.runFor(48));
+  assert.deepEqual(await game.position(), GENERATED_SPAWN);
+  for (const cell of cells) assert.equal(await buildingAt(cell), '—');
+}

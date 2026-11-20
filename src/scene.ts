@@ -39,7 +39,7 @@ export class GridScene extends Phaser.Scene {
 
   constructor(layout?: readonly string[], defenseOptions?: DefenseOptions, wide = false) {
     super("grid");
-    this.terrain = new TerrainMap(layout);
+    this.terrain = new TerrainMap(layout, wide ? {} : { autoMerge: false });
     this.player = new Player(this.terrain.spawn);
     this.mining = new MiningSession(this.terrain);
     this.defenseOptions = defenseOptions;

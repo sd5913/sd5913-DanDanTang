@@ -79,7 +79,7 @@ export class DefenseSimulation {
   private readonly emit: (event: DefenseEvent) => void;
   private readonly units = new Map<number, EnemyState>();
   private readonly spawnQueue: SpawnRequest[] = [];
-  private towerReadyAt = new WeakMap<Building, number>();
+  private towerReadyAt = new WeakMap<GridPosition, number>();
   private navigation: EnemyNavigation;
   private counts = newCounters();
   private timeMs = 0;
@@ -240,7 +240,7 @@ export class DefenseSimulation {
   }
 
   private fireTower(tower: Building): void {
-    if ((this.towerReadyAt.get(tower) ?? 0) > this.timeMs) return;
+    if ((this.towerReadyAt.get(tower.cell) ?? 0) > this.timeMs) return;
     let selected: EnemyState | undefined;
     let closest = DEFENSE_CONFIG.towerRange ** 2;
     for (const enemy of this.units.values()) {
@@ -252,7 +252,7 @@ export class DefenseSimulation {
     }
     if (!selected) return;
 
-    this.towerReadyAt.set(tower, this.timeMs + DEFENSE_CONFIG.towerIntervalMs);
+    this.towerReadyAt.set(tower.cell, this.timeMs + DEFENSE_CONFIG.towerIntervalMs);
     selected.hp = Math.max(0, selected.hp - DEFENSE_CONFIG.towerDamage);
     this.counts.shots += 1;
     this.emit({ type: "towerShot", enemyId: selected.id, towerId: tower.id, from: tower.cell, to: enemyPosition(selected) });

@@ -15,8 +15,8 @@ test("wall and prototype tower occupy and block empty cells independently of ter
   const requested = { ...east };
   const wall = map.placeBuilding("wall", requested);
   const tower = map.placeBuilding("tower", south, 12);
-  assert.deepEqual(wall, { id: wall.id, kind: "wall", cell: east, hp: 50, maxHp: 50 });
-  assert.deepEqual(tower, { id: tower.id, kind: "tower", cell: south, hp: 12, maxHp: 12 });
+  assert.deepEqual(wall, { id: wall.id, kind: "wall", cell: east, level: 1, buildOrder: 1, hp: 50, maxHp: 50 });
+  assert.deepEqual(tower, { id: tower.id, kind: "tower", cell: south, level: 1, buildOrder: 2, hp: 12, maxHp: 12 });
   assert.notEqual(wall.id, tower.id);
   requested.col = 20;
   assert.ok(Object.isFrozen(wall));
@@ -151,6 +151,7 @@ test("seam blockage updates the same topology as digging, and reset clears all b
   assert.equal(map.isWalkable(from), true);
   const postReset = map.placeBuilding("wall", from);
   assert.ok(![wall.id, northern.id, southern.id].includes(postReset.id));
+  assert.ok(postReset.buildOrder > southern.buildOrder);
   assert.equal(map.impactWall(from, southern.id, 1), undefined);
   assert.equal(map.getBuilding(from), postReset);
 });
