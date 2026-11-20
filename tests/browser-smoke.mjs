@@ -31,7 +31,11 @@ try {
   try {
     const url = `http://${host}:${address.port}`;
     const mode = development ? 'dev' : 'production';
-    if (process.argv.includes('--fix01-a')) {
+    if (process.argv.includes('--directional-mining')) {
+      await withSmokePage(browser, { width: 1440, height: 1060 },
+        (page) => runSingleMapSmoke(page, url + '/?map=single', { directionalOnly: true }));
+      console.log('Edge smoke (' + mode + ', directional mining): passed; locked aimed hit, stationary-pointer north and west mining, key priority and cancellation, cooldown, and release verified; no browser errors.');
+    } else if (process.argv.includes('--fix01-a')) {
       await runCardFeedbackBrowserSmoke(browser, url, mode);
     } else if (process.argv.includes('--fix01-b')) {
       await runBuildRangeBrowserSmoke(browser, url, mode);
@@ -83,7 +87,7 @@ async function runStrataBrowserSmoke(browser, url, mode) {
 async function runStandardBrowserSmoke(browser, url, mode) {
     const dugTiles = await withSmokePage(browser, { width: 1440, height: 1060 },
       (page) => runSingleMapSmoke(page, `${url}/?map=single`));
-    console.log(`Edge smoke (${mode}, single map): passed; real rapid clicks and cross-target cooldown, hold/release, target lock and chaining after clearing, interruption, and ready-tool reset verified; ${dugTiles} tiles mined on the route; no browser errors.`);
+    console.log(`Edge smoke (${mode}, single map): passed; real rapid clicks and cross-target cooldown, hold/release, target lock and pointer/directional chaining after clearing, interruption, and ready-tool reset verified; ${dugTiles} tiles mined on the route; no browser errors.`);
 
     await withSmokePage(browser, { width: 1040, height: 840 },
       (page) => runLongMapSmoke(page, `${url}/?map=regression`));
@@ -157,13 +161,17 @@ async function withSmokePage(browser, viewport, run) {
   }
 }
 
-async function runSingleMapSmoke(page, url) {
+async function runSingleMapSmoke(page, url, { directionalOnly = false } = {}) {
   const board = page.locator('#board canvas');
   const { attackIntervalMs, dirtMaxHp } = MINING_CONFIG;
   const { col, row } = map.spawn;
   const firstDig = { col, row: row - 1 };
   const east = { col: col + 1, row };
   const south = { col, row: row + 1 };
+  // Both dirt targets are eligible from this empty cell.
+  const lockOrigin = { col: col + 2, row: row - 1 };
+  const lockedTarget = { col: lockOrigin.col - 1, row: lockOrigin.row };
+  const otherTarget = { col: lockOrigin.col, row: lockOrigin.row - 1 };
 
   function coordinates(cell) {
     return `(${cell.col}, ${cell.row})`;
@@ -262,12 +270,82 @@ async function runSingleMapSmoke(page, url) {
     await waitForText('#player-cell', coordinates(map.spawn));
   }
 
+  async function moveToLockOrigin() {
+    await movePlayer('KeyD', { col: lockOrigin.col + 1, row });
+    await movePlayer('KeyA', { col: lockOrigin.col, row });
+    await movePlayer('KeyW', lockOrigin);
+  }
+
+  async function verifyDirectionalMining() {
+    const turnTarget = { col: otherTarget.col - 1, row: otherTarget.row };
+    const straightTarget = { col: otherTarget.col, row: otherTarget.row - 1 };
+    const result = page.locator('#dig-result');
+    const player = page.locator('#player-cell');
+
+    async function advanceTo(locator, expected, detail = '') {
+      const timeBudget = (dirtMaxHp + 1) * attackIntervalMs;
+      for (let elapsed = 0; elapsed <= timeBudget; elapsed += 16) {
+        const actual = await locator.textContent();
+        if (actual.includes(expected) && actual.includes(detail)) return;
+        await page.clock.runFor(16);
+      }
+      assert.fail('Expected ' + expected + ' ' + detail + ', got ' + await locator.textContent());
+    }
+
+    await moveToLockOrigin();
+    await inspectCell(lockedTarget, '可挖地形', 'HP 5/5');
+    await page.clock.pauseAt(await page.evaluate(() => Date.now() + 200));
+    try {
+      // Settle against the west dirt so the player's footprint fits the north passage.
+      await holdKey('KeyA', () => page.clock.runFor(300));
+      await holdKey('KeyW', () => page.clock.runFor(attackIntervalMs * 2));
+      assert.equal((await player.textContent()).trim(), coordinates(lockOrigin));
+      assert.match(await result.textContent(), /等待挖掘/, 'W alone must not start mining');
+      await assertHoverHp(lockedTarget, 5, 'The aim must be intact before pressing');
+
+      await holdMouse(async () => {
+        await assertHoverHp(lockedTarget, 4, 'Pressing must hit the aimed tile first');
+        await holdKey('KeyW', async () => {
+          await page.clock.runFor(2 * attackIntervalMs + 32);
+          await assertHoverHp(lockedTarget, 2, 'W must not switch away from the started tile');
+          await advanceTo(result, '挖掘成功', coordinates(lockedTarget));
+          await page.clock.runFor(Math.floor(attackIntervalMs / 2));
+          assert.ok((await result.textContent()).includes(coordinates(lockedTarget)),
+            'The next tile must respect the cooldown after clearing');
+
+          await holdKey('KeyS', () => page.clock.runFor(2 * attackIntervalMs));
+          assert.ok((await result.textContent()).includes(coordinates(lockedTarget)),
+            'Opposing W and S must cancel before starting the next tile');
+          await advanceTo(result, '剩余 4 HP', coordinates(otherTarget));
+          await holdKey('KeyS', async () => {
+            await advanceTo(result, '剩余 3 HP', coordinates(otherTarget));
+          });
+          await advanceTo(result, '挖掘成功', coordinates(otherTarget));
+          await advanceTo(player, coordinates(otherTarget));
+
+          // W remains down, but the newer A should select west from the entered cell.
+          await holdKey('KeyA', () => advanceTo(result, '剩余 4 HP', coordinates(turnTarget)));
+        });
+        await waitForText('#hover-cell', '空地', coordinates(lockedTarget));
+      });
+
+      await holdKey('KeyA', () => page.clock.runFor(2 * attackIntervalMs));
+      await inspectCell(turnTarget, '可挖地形', 'HP 4/5');
+      await inspectCell(straightTarget, '可挖地形', 'HP 5/5');
+      await inspectCell(otherTarget, '空地');
+    } finally {
+      await page.clock.resume();
+    }
+    await resetMap();
+  }
+
   await page.clock.install();
   const response = await page.goto(url);
   assert.equal(response?.status(), 200, 'Game page must load');
   await board.waitFor();
   await waitForText('#player-cell', coordinates(map.spawn));
   assert.ok(await page.locator('#new-round').isHidden());
+  if (directionalOnly) return verifyDirectionalMining();
 
   const originalGridStatus = await page.locator('#grid-status').textContent();
   assert.match(originalGridStatus, /显示|隐藏/);
@@ -401,17 +479,6 @@ async function runSingleMapSmoke(page, url) {
     await assertHoverHpStays(firstDig, 5, 'Reset must restore all HP and cancel the ongoing press');
   });
 
-  // Both dirt targets are eligible from this empty cell.
-  const lockOrigin = { col: col + 2, row: row - 1 };
-  const lockedTarget = { col: lockOrigin.col - 1, row: lockOrigin.row };
-  const otherTarget = { col: lockOrigin.col, row: lockOrigin.row - 1 };
-
-  async function moveToLockOrigin() {
-    await movePlayer('KeyD', { col: lockOrigin.col + 1, row });
-    await movePlayer('KeyA', { col: lockOrigin.col, row });
-    await movePlayer('KeyW', lockOrigin);
-  }
-
   await moveToLockOrigin();
   const firstTargetPoint = await cellCenter(lockedTarget);
   const secondTargetPoint = await cellCenter(otherTarget);
@@ -502,5 +569,6 @@ async function runSingleMapSmoke(page, url) {
   assert.doesNotMatch(await page.locator('#goal-status').textContent(), /P0-A 测试完成/);
   for (const cell of dugCells) await inspectCell(cell, '可挖地形', 'HP 5/5');
 
+  await verifyDirectionalMining();
   return dugCells.length;
 }

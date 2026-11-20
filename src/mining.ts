@@ -14,7 +14,7 @@ export interface MiningStrike {
 }
 
 interface ActiveMining {
-  // A cleared target leaves the hold active while the player aims at the next tile.
+  // A cleared target leaves the hold active for the next adjacent tile.
   readonly target: GridPosition | null;
   lastUpdateMs: number;
 }
@@ -59,7 +59,7 @@ export class MiningSession {
     return { target, result };
   }
 
-  update(from: GridPosition, nowMs: number, aimedCell: GridPosition | null = null): MiningStrike | undefined {
+  update(from: GridPosition, nowMs: number, nextCell: GridPosition | null = null): MiningStrike | undefined {
     const active = this.active;
     if (!active) return;
 
@@ -73,8 +73,8 @@ export class MiningSession {
     const { target } = active;
     const toolLevel = this.getToolLevel();
     if (!target) {
-      if (nowMs < this.nextAttackMs || !aimedCell || this.map.getDigFailure(from, aimedCell, toolLevel)) return;
-      return this.begin(from, aimedCell, nowMs);
+      if (nowMs < this.nextAttackMs || !nextCell || this.map.getDigFailure(from, nextCell, toolLevel)) return;
+      return this.begin(from, nextCell, nowMs);
     }
     if (this.map.getDigFailure(from, target, toolLevel)) {
       this.stop();

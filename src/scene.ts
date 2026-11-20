@@ -115,8 +115,23 @@ export class GridScene extends Phaser.Scene {
       return;
     }
 
-    const strike = this.mining.update(this.player.cell, performance.now(), this.hovered);
+    const cell = this.player.cell;
+    const nextCell = this.miningContinuation(cell, horizontal, vertical);
+    const strike = this.mining.update(cell, performance.now(), nextCell);
     if (strike) this.showStrike(strike);
+  }
+
+  private miningContinuation(cell: GridPosition, horizontal: number, vertical: number): GridPosition | null {
+    if (!horizontal && !vertical) return this.hovered;
+    if (!horizontal) return { col: cell.col, row: cell.row + vertical };
+    if (!vertical) return { col: cell.col + horizontal, row: cell.row };
+
+    // Choose one orthogonal neighbor when moving diagonally.
+    const horizontalKey = this.keys[horizontal > 0 ? "D" : "A"];
+    const verticalKey = this.keys[vertical > 0 ? "S" : "W"];
+    return horizontalKey.timeDown > verticalKey.timeDown
+      ? { col: cell.col + horizontal, row: cell.row }
+      : { col: cell.col, row: cell.row + vertical };
   }
 
   private inspectPointer(pointer: Phaser.Input.Pointer): void {
