@@ -59,6 +59,16 @@ export class MiningSession {
     return { target, result };
   }
 
+  getTarget(from: GridPosition, nextCell: GridPosition | null = null): GridPosition | null {
+    return this.selectTarget(from, nextCell, this.getToolLevel());
+  }
+
+  private selectTarget(from: GridPosition, nextCell: GridPosition | null, toolLevel: number): GridPosition | null {
+    if (!this.active) return null;
+    const target = this.active.target ?? nextCell;
+    return target && !this.map.getDigFailure(from, target, toolLevel) ? target : null;
+  }
+
   update(from: GridPosition, nowMs: number, nextCell: GridPosition | null = null): MiningStrike | undefined {
     const active = this.active;
     if (!active) return;
@@ -70,15 +80,14 @@ export class MiningSession {
     }
     active.lastUpdateMs = nowMs;
 
-    const { target } = active;
     const toolLevel = this.getToolLevel();
+    const target = this.selectTarget(from, nextCell, toolLevel);
     if (!target) {
-      if (nowMs < this.nextAttackMs || !nextCell || this.map.getDigFailure(from, nextCell, toolLevel)) return;
-      return this.begin(from, nextCell, nowMs);
-    }
-    if (this.map.getDigFailure(from, target, toolLevel)) {
-      this.stop();
+      if (active.target) this.stop();
       return;
+    }
+    if (!active.target) {
+      return nowMs >= this.nextAttackMs ? this.begin(from, target, nowMs) : undefined;
     }
 
     let result: DigResult | undefined;

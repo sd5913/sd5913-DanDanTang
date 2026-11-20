@@ -3,12 +3,99 @@ import test from "node:test";
 import { MINING_CONFIG } from "../src/mining-config.ts";
 import { MiningSession } from "../src/mining.ts";
 import { TerrainMap } from "../src/terrain.ts";
+import { TEST_MAP_LAYOUT } from "../src/test-map.ts";
 
 const north = { col: 11, row: 27 };
 const northeast = { col: 12, row: 27 };
 const east = { col: 12, row: 28 };
 const { attackIntervalMs } = MINING_CONFIG;
 const clearAt = 4 * attackIntervalMs;
+
+test("target preview preserves the active lock and does not retarget or end a hold by itself", () => {
+  const map = new TerrainMap();
+  const mining = new MiningSession(map);
+  const origin = { col: 4, row: 25 };
+  const locked = { col: 5, row: 25 };
+  const aimed = { col: 4, row: 24 };
+  const shifted = { col: 3, row: 25 };
+  const shiftedAim = { col: 3, row: 26 };
+  assert.equal(mining.begin(origin, locked, 0).result.hp, 4);
+  assert.deepEqual(mining.getTarget(origin), locked);
+  assert.deepEqual(mining.getTarget(origin, aimed), locked);
+  assert.equal(mining.getTarget(shifted, shiftedAim), null, "an out-of-range lock must not preview a replacement");
+  assert.deepEqual(mining.getTarget(origin, aimed), locked, "previewing out of range must not cancel the hold");
+  assert.equal(map.getCell(locked).hp, 4);
+  assert.equal(map.getCell(aimed).hp, 5);
+  assert.equal(map.revision, 0);
+
+  const beforeStrike = mining.getTarget(origin, aimed);
+  assert.equal(mining.update(origin, attackIntervalMs - 1, aimed), undefined);
+  assert.deepEqual(mining.update(origin, attackIntervalMs, aimed).target, beforeStrike);
+  assert.equal(map.getCell(locked).hp, 3);
+  assert.equal(map.getCell(aimed).hp, 5);
+  assert.equal(mining.update(shifted, attackIntervalMs + 1, shiftedAim), undefined);
+  assert.equal(mining.getTarget(origin, aimed), null, "the real out-of-range update cancels the hold");
+});
+
+test("pending preview follows eligible neighbors before the shared cooldown allows an actual strike", () => {
+  const origin = { col: 4, row: 25 };
+  const first = { col: 5, row: 25 };
+  const hard = { col: 4, row: 24 };
+  const soft = { col: 4, row: 26 };
+  const layout = [...TEST_MAP_LAYOUT];
+  layout[hard.row] = layout[hard.row].slice(0, hard.col) + "2" + layout[hard.row].slice(hard.col + 1);
+  const map = new TerrainMap(layout);
+  let toolLevel = 1;
+  const mining = new MiningSession(map, { damage: 5, attackIntervalMs }, () => toolLevel);
+  assert.equal(attackIntervalMs, 125);
+  assert.equal(mining.begin(origin, first, 0).result.cleared, true);
+
+  for (const invalid of [first, origin, hard, { col: 5, row: 26 }, { col: 3, row: 25 }, { col: -1, row: 25 }]) {
+    assert.equal(mining.getTarget(origin, invalid), null);
+  }
+  assert.equal(mining.getTarget({ col: 3, row: 25 }, soft), null);
+  assert.deepEqual(mining.getTarget(origin, soft), soft);
+  toolLevel = 2;
+  assert.deepEqual(mining.getTarget(origin, hard), hard);
+  assert.equal(mining.update(origin, attackIntervalMs - 1, hard), undefined);
+  assert.equal(map.getCell(hard).hp, 8);
+  assert.equal(map.getCell(soft).hp, 5);
+  assert.equal(map.revision, 1);
+
+  const softPreview = mining.getTarget(origin, soft);
+  assert.deepEqual(mining.update(origin, attackIntervalMs, soft), {
+    target: softPreview, result: { effective: true, damage: 5, hp: 0, cleared: true },
+  });
+  const hardPreview = mining.getTarget(origin, hard);
+  assert.deepEqual(hardPreview, hard);
+  assert.equal(mining.update(origin, 2 * attackIntervalMs - 1, hard), undefined);
+  assert.deepEqual(mining.update(origin, 2 * attackIntervalMs, hard), {
+    target: hardPreview, result: { effective: true, damage: 5, hp: 3, cleared: false },
+  });
+  assert.deepEqual(mining.getTarget(origin, soft), hard, "the next damaged tile becomes the new lock");
+});
+
+test("target preview is absent while inactive, after an illegal first press, and after release or reset", () => {
+  const map = new TerrainMap();
+  const mining = new MiningSession(map);
+  assert.equal(mining.getTarget(map.spawn, north), null);
+  assert.equal(mining.begin(east, north, 0).result.reason, "out-of-reach");
+  assert.equal(mining.getTarget(map.spawn, north), null);
+  assert.equal(mining.update(map.spawn, attackIntervalMs, north), undefined);
+  assert.equal(map.getCell(north).hp, 5);
+
+  assert.equal(mining.begin(map.spawn, north, 2 * attackIntervalMs).result.hp, 4);
+  mining.stop();
+  assert.equal(mining.getTarget(map.spawn, north), null);
+  assert.equal(mining.update(map.spawn, 3 * attackIntervalMs, north), undefined);
+  assert.equal(map.getCell(north).hp, 4);
+
+  assert.equal(mining.begin(map.spawn, north, 4 * attackIntervalMs).result.hp, 3);
+  mining.reset();
+  assert.equal(mining.getTarget(map.spawn, north), null);
+  assert.equal(mining.update(map.spawn, 5 * attackIntervalMs, north), undefined);
+  assert.equal(map.getCell(north).hp, 3);
+});
 
 test("mining strikes immediately, then once per elapsed interval until the locked tile clears", () => {
   const map = new TerrainMap();

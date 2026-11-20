@@ -19,6 +19,7 @@ export class GridRenderer {
   private readonly terrainLayer: Phaser.GameObjects.Layer;
   private readonly gridLayer: Phaser.GameObjects.Layer;
   private readonly cursor: Phaser.GameObjects.Rectangle;
+  private readonly miningCursor: Phaser.GameObjects.Rectangle;
   private readonly buildCursor: Phaser.GameObjects.Rectangle;
   private readonly resident = new Map<number, ChunkSlot>();
   private readonly spare: ChunkSlot[] = [];
@@ -36,6 +37,12 @@ export class GridRenderer {
       .setOrigin(0)
       .setStrokeStyle(1, 0xf1f5e4)
       .setDepth(2)
+      .setVisible(false);
+
+    this.miningCursor = scene.add.rectangle(0, 0, TILE_SIZE - 2, TILE_SIZE - 2, 0xffcf75, 0.22)
+      .setOrigin(0)
+      .setStrokeStyle(2, 0xffcf75)
+      .setDepth(2.25)
       .setVisible(false);
 
     this.buildCursor = scene.add.rectangle(0, 0, TILE_SIZE - 2, TILE_SIZE - 2)
@@ -161,6 +168,11 @@ export class GridRenderer {
   showHover(cell: GridPosition | null): void {
     this.cursor.setVisible(cell !== null);
     if (cell) this.cursor.setPosition(cell.col * TILE_SIZE + 1, cell.row * TILE_SIZE + 1);
+  }
+
+  showMiningTarget(cell: GridPosition | null): void {
+    this.miningCursor.setVisible(cell !== null);
+    if (cell) this.miningCursor.setPosition(cell.col * TILE_SIZE + 1, cell.row * TILE_SIZE + 1);
   }
 
   showBuildPreview(cell: GridPosition | null, state?: PlacementPreview): void {

@@ -101,16 +101,14 @@ export class GridScene extends Phaser.Scene {
       return;
     }
 
-    const horizontal = Number(this.keys.D.isDown) - Number(this.keys.A.isDown);
-    const vertical = Number(this.keys.S.isDown) - Number(this.keys.W.isDown);
+    const { horizontal, vertical } = this.movementInput();
     if (horizontal || vertical) {
       this.player.move(horizontal, vertical, delta, this.terrain);
       this.updatePlayer();
     }
     this.defense?.update(delta, this.hovered);
 
-    if (this.defense?.roundEnded || !this.input.mousePointer.leftButtonDown()
-      || !this.input.isOver || document.hidden || !document.hasFocus()) {
+    if (!this.canContinueMining()) {
       this.stopMining();
       return;
     }
@@ -119,6 +117,18 @@ export class GridScene extends Phaser.Scene {
     const nextCell = this.miningContinuation(cell, horizontal, vertical);
     const strike = this.mining.update(cell, performance.now(), nextCell);
     if (strike) this.showStrike(strike);
+  }
+
+  private canContinueMining(): boolean {
+    return !this.defense?.roundEnded && this.input.mousePointer.leftButtonDown()
+      && this.input.isOver && !document.hidden && document.hasFocus() && !this.game.isPaused;
+  }
+
+  private movementInput(): { horizontal: number; vertical: number } {
+    return {
+      horizontal: Number(this.keys.D.isDown) - Number(this.keys.A.isDown),
+      vertical: Number(this.keys.S.isDown) - Number(this.keys.W.isDown),
+    };
   }
 
   private miningContinuation(cell: GridPosition, horizontal: number, vertical: number): GridPosition | null {
@@ -198,7 +208,20 @@ export class GridScene extends Phaser.Scene {
     }
     const placement = this.defense?.render(view, this.hovered);
     this.boardRenderer.showBuildPreview(this.hovered, placement);
+    this.updateMiningPreview();
     this.fogRenderer?.render(view);
+  }
+
+  private updateMiningPreview(): void {
+    if (!this.canContinueMining()) {
+      this.boardRenderer.showMiningTarget(null);
+      return;
+    }
+    const cell = this.player.cell;
+    const { horizontal, vertical } = this.movementInput();
+    const candidate = this.miningContinuation(cell, horizontal, vertical);
+    const target = this.mining.getTarget(cell, candidate);
+    this.boardRenderer.showMiningTarget(target && this.isVisible(target) ? target : null);
   }
 
   private updateFog(): boolean {
@@ -251,6 +274,7 @@ export class GridScene extends Phaser.Scene {
 
   private stopMining(): void {
     this.mining.stop();
+    this.boardRenderer.showMiningTarget(null);
   }
 
   private shutdown(): void {
@@ -285,6 +309,7 @@ export class GridScene extends Phaser.Scene {
 
   private reset(): void {
     this.mining.reset();
+    this.boardRenderer.showMiningTarget(null);
     this.terrain.reset();
     this.player.reset(this.terrain.spawn);
     this.defense?.reset();
