@@ -1,7 +1,8 @@
 import type { GridPosition } from "./terrain.ts";
 
-export type BuildingKind = "wall" | "tower";
+export type BuildingKind = "wall" | "tower" | "economy" | "technology";
 export const BUILDING_SYNTHESIS_CONFIG = { autoMerge: true } as const;
+const BUILDING_KINDS: ReadonlySet<BuildingKind> = new Set(["wall", "tower", "economy", "technology"]);
 
 export interface Building {
   readonly id: string;
@@ -59,7 +60,7 @@ export class BuildingStore {
   }
 
   place(kind: BuildingKind, cell: GridPosition, hp: number): Building | undefined {
-    if ((kind !== "wall" && kind !== "tower") || !Number.isSafeInteger(hp) || hp <= 0) return undefined;
+    if (!BUILDING_KINDS.has(kind) || !Number.isSafeInteger(hp) || hp <= 0) return undefined;
     const index = this.index(cell);
     if (this.#occupied.has(index)) return undefined;
 

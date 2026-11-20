@@ -1,7 +1,7 @@
 import Phaser from "phaser";
-import type { BuildingKind } from "./buildings.ts";
 import { DefenseSimulation, enemyPosition, sameCell } from "./defense-simulation.ts";
 import type { DefenseEvent } from "./defense-simulation.ts";
+import { BUILDING_NAMES, ExpeditionControls } from "./expedition-controls.ts";
 import { cellCenter, PLAYER_HALF_SIZE, TILE_SIZE } from "./player.ts";
 import type { Player } from "./player.ts";
 import type { GridPosition, TerrainMap } from "./terrain.ts";
@@ -22,9 +22,10 @@ function coordinates({ col, row }: GridPosition): string { return `(${col}, ${ro
 
 type Shot = Extract<DefenseEvent, { type: "towerShot" }>;
 
-interface DefenseScenario {
+export interface DefenseScenario {
   readonly entry: GridPosition;
   readonly target: GridPosition;
+  readonly worldSeed?: number;
 }
 
 export class DefenseDebug {
@@ -42,7 +43,8 @@ export class DefenseDebug {
   private readonly count = field<HTMLSelectElement>("spawn-count");
   private readonly damage = field<HTMLSelectElement>("spawn-damage");
   private readonly playerTarget = field<HTMLInputElement>("test-player-target");
-  private readonly keys: Record<"B" | "T" | "X", Phaser.Input.Keyboard.Key>;
+  private readonly keys?: Record<"B" | "T" | "X", Phaser.Input.Keyboard.Key>;
+  private readonly expedition?: ExpeditionControls;
   private shots: { readonly event: Shot; readonly expires: number }[] = [];
   private timeMs = 0;
 
@@ -53,6 +55,10 @@ export class DefenseDebug {
     this.simulation = new DefenseSimulation(map, scenario.entry, scenario.target, (event) => this.onEvent(event));
     this.graphics = scene.add.graphics().setDepth(1.5);
     this.labelLayer = scene.add.layer().setDepth(2.5);
+    if (scenario.worldSeed !== undefined) {
+      this.expedition = new ExpeditionControls(scene, map, scenario.worldSeed, () => this.spawnPrototypeEnemy());
+      return;
+    }
     this.keys = scene.input.keyboard!.addKeys("B,T,X", false) as typeof this.keys;
     const panel = field("defense-panel");
     const spawn = field<HTMLButtonElement>("spawn-enemies");
@@ -65,15 +71,17 @@ export class DefenseDebug {
   }
 
   update(deltaMs: number, cell: GridPosition | null): void {
-    if (Phaser.Input.Keyboard.JustDown(this.keys.B)) this.place("wall", cell);
-    if (Phaser.Input.Keyboard.JustDown(this.keys.T)) this.place("tower", cell);
-    if (Phaser.Input.Keyboard.JustDown(this.keys.X) && cell) {
+    if (this.keys && Phaser.Input.Keyboard.JustDown(this.keys.B)) this.place("wall", cell);
+    if (this.keys && Phaser.Input.Keyboard.JustDown(this.keys.T)) this.place("tower", cell);
+    if (this.keys && Phaser.Input.Keyboard.JustDown(this.keys.X) && cell) {
       const removed = this.map.removeBuilding(cell);
       write(this.status, removed ? `已拆除 ${coordinates(cell)}` : "指向格没有建筑");
     }
     const elapsed = Math.min(deltaMs, 50);
     this.timeMs += elapsed;
-    this.simulation.step(elapsed, this.playerTarget.checked ? this.player.cell : undefined);
+    this.expedition?.economy.advance(elapsed);
+    this.simulation.step(elapsed, this.expedition || this.playerTarget.checked ? this.player.cell : undefined);
+    this.expedition?.refresh();
   }
 
   render(view: Phaser.Geom.Rectangle, cell: GridPosition | null): void {
@@ -87,8 +95,12 @@ export class DefenseDebug {
         graphics.fillStyle(0x82563d).fillRect(x - 10, y - 10, 20, 20);
         graphics.lineStyle(1, 0xecc69b).strokeRect(x - 10, y - 10, 20, 20);
         this.wallLabel(labelCount++, x, y, building.hp);
-      } else {
+      } else if (building.kind === "tower") {
         graphics.fillStyle(0x73d4cc).fillTriangle(x, y - 9, x + 9, y + 8, x - 9, y + 8);
+      } else {
+        const color = building.kind === "economy" ? 0x927137 : 0x676299;
+        graphics.fillStyle(color).fillRoundedRect(x - 10, y - 10, 20, 20, 3);
+        this.wallLabel(labelCount++, x, y, building.hp);
       }
       if (building.level === 2) graphics.lineStyle(1, 0x8de6ca).strokeRect(x - 11, y - 11, 22, 22);
     }
@@ -123,16 +135,25 @@ export class DefenseDebug {
 
     this.showStats(active, visible, Number.isFinite(northRow) ? northRow : -1, unreachable);
     const building = cell && this.map.getBuilding(cell);
-    const name = building?.kind === "wall" ? "城墙" : "测试塔";
+    const name = building && (building.kind === "tower" && !this.expedition ? "测试塔" : BUILDING_NAMES[building.kind]);
     const level = building?.level === 2 ? " · Lv.2" : "";
-    write(this.hover, building ? `${name} ${coordinates(building.cell)} · ${building.hp} HP${level}` : "—");
+    const description = building ? `${name} ${coordinates(building.cell)} · ${building.hp} HP${level}` : "—";
+    write(this.hover, description);
+    this.expedition?.showBuilding(description);
   }
 
   reset(): void {
     this.simulation.reset();
     this.timeMs = 0;
     this.shots = [];
+    this.expedition?.reset();
     write(this.status, "等待布防或生成敌人");
+  }
+
+  placeSelectedCard(cell: GridPosition): boolean {
+    if (!this.expedition?.hasSelection) return false;
+    this.expedition.placeSelected(cell, this.canPlaceAt(cell));
+    return true;
   }
 
   private readonly spawn = (): void => {
@@ -140,9 +161,12 @@ export class DefenseDebug {
     write(this.status, count ? `已请求 ${count} 只从南端生成` : "出兵请求无效");
   };
 
-  private place(kind: BuildingKind, cell: GridPosition | null): void {
-    if (!cell || sameCell(cell, this.scenario.entry) || sameCell(cell, this.scenario.target)
-      || this.overlapsPlayer(cell) || this.simulation.occupies(cell)) {
+  private spawnPrototypeEnemy(): void {
+    if (this.simulation.requestSpawn(1, 1)) this.expedition?.showFeedback("已请求 1 只从南端生成");
+  }
+
+  private place(kind: "wall" | "tower", cell: GridPosition | null): void {
+    if (!cell || !this.canPlaceAt(cell)) {
       write(this.status, "请选择未被占用的空地");
       return;
     }
@@ -157,6 +181,11 @@ export class DefenseDebug {
       : `已建造${name} ${coordinates(cell)}`);
   }
 
+  private canPlaceAt(cell: GridPosition): boolean {
+    return !sameCell(cell, this.scenario.entry) && !sameCell(cell, this.scenario.target)
+      && !this.overlapsPlayer(cell) && !this.simulation.occupies(cell);
+  }
+
   private overlapsPlayer(cell: GridPosition): boolean {
     const { x, y } = this.player.position;
     const left = cell.col * TILE_SIZE;
@@ -166,6 +195,7 @@ export class DefenseDebug {
   }
 
   private onEvent(event: DefenseEvent): void {
+    this.expedition?.economy.handleEvent(event);
     if (event.type === "towerShot") this.shots.push({ event, expires: this.timeMs + SHOT_VISIBLE_MS });
     if (event.type === "wallImpact") {
       const result = event.destroyed ? "墙已毁" : `墙剩 ${event.hp} HP`;

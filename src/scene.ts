@@ -1,5 +1,6 @@
 import Phaser from "phaser";
 import { DefenseDebug } from "./defense-debug.ts";
+import type { DefenseScenario } from "./defense-debug.ts";
 import { DebugHud } from "./hud.ts";
 import { MiningSession } from "./mining.ts";
 import type { MiningStrike } from "./mining.ts";
@@ -12,16 +13,11 @@ const VISIBLE_COLUMNS = 18;
 const CAMERA_FOLLOW = 0.24;
 const NORTH_LOOK_AHEAD = 0.15;
 
-interface DefenseOptions {
-  readonly entry: GridPosition;
-  readonly target: GridPosition;
-}
-
 export class GridScene extends Phaser.Scene {
   private readonly terrain: TerrainMap;
   private readonly player: Player;
   private readonly mining: MiningSession;
-  private readonly defenseOptions?: DefenseOptions;
+  private readonly defenseOptions?: DefenseScenario;
   private readonly wide: boolean;
   private readonly previousView = new Phaser.Geom.Rectangle();
   private readonly projectedView = new Phaser.Geom.Rectangle();
@@ -37,7 +33,7 @@ export class GridScene extends Phaser.Scene {
   private reachedGoal = false;
   private refreshPointerAfterResize = false;
 
-  constructor(layout?: readonly string[], defenseOptions?: DefenseOptions, wide = false) {
+  constructor(layout?: readonly string[], defenseOptions?: DefenseScenario, wide = false) {
     super("grid");
     this.terrain = new TerrainMap(layout, wide ? {} : { autoMerge: false });
     this.player = new Player(this.terrain.spawn);
@@ -177,6 +173,10 @@ export class GridScene extends Phaser.Scene {
     if (pointer.button !== 0 || !pointer.leftButtonDown() || document.hidden || !document.hasFocus() || this.game.isPaused) return;
     const target = this.pointerCell(pointer);
     if (!target) return;
+    if (this.defense?.placeSelectedCard(target)) {
+      this.stopMining();
+      return;
+    }
     const strike = this.mining.begin(this.player.cell, target, performance.now());
     if (strike) this.showStrike(strike);
     this.inspectPointer(pointer);

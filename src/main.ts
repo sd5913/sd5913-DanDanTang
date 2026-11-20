@@ -14,8 +14,9 @@ import "./style.css";
 
 const params = new URLSearchParams(window.location.search);
 const defense = params.get("mode") === "defense";
+const play = params.get("mode") === "play";
 const fixture = params.get("map");
-const wide = fixture !== "fix01" && (defense || (fixture !== "single" && fixture !== "regression"));
+const wide = play || (fixture !== "fix01" && (defense || (fixture !== "single" && fixture !== "regression")));
 const world = wide ? generateExpeditionWorld(selectWorldSeed(params.get("seed"))) : undefined;
 
 let layout: readonly string[];
@@ -33,11 +34,13 @@ if (world) {
   layout = LONG_MAP_LAYOUT;
   phase = "P0-A.2";
 }
-const defenseOptions = !defense ? undefined : wide
-  ? { entry: GENERATED_ENEMY_ENTRY, target: GENERATED_GOAL }
-  : { entry: ENEMY_ENTRY, target: DEFENSE_TARGET };
+const defenseOptions = play && world
+  ? { entry: GENERATED_ENEMY_ENTRY, target: GENERATED_GOAL, worldSeed: world.effectiveSeed }
+  : !defense ? undefined : wide
+    ? { entry: GENERATED_ENEMY_ENTRY, target: GENERATED_GOAL }
+    : { entry: ENEMY_ENTRY, target: DEFENSE_TARGET };
 document.documentElement.classList.toggle("wide-map", wide);
-document.title = `${phase} · ${defense ? "防御灰盒" : "格子地形与持续挖掘"}`;
+document.title = `${phase} · ${play ? "掘进对局" : defense ? "防御灰盒" : "格子地形与持续挖掘"}`;
 document.getElementById("map-size")!.textContent =
   `${phase} / ${layout[0].length} × ${layout.length}${world ? ` · ${worldSeedLabel(world)}` : ""}`;
 

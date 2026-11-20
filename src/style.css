@@ -172,6 +172,8 @@ kbd {
 }
 
 .defense-controls button { color: var(--mint); cursor: pointer; }
+.defense-controls button[aria-pressed="true"] { background: #2c524a; border-color: var(--mint); }
+.defense-controls button:disabled { opacity: 0.55; cursor: default; }
 .contact-test { display: flex; align-items: center; gap: 0.35rem; }
 #defense-hover, #defense-stats, #defense-combat-stats {
   color: var(--muted);

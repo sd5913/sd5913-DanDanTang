@@ -1,0 +1,149 @@
+import assert from 'node:assert/strict';
+import { ECONOMY_PROTOTYPE } from '../src/expedition-economy.ts';
+import { GENERATED_SPAWN } from '../src/generated-map.ts';
+import { openWideGame } from './browser-fix02.mjs';
+
+const starterCards = { wall: 4, tower: 2, economy: 1 };
+const technologyCell = { col: 17, row: 90 };
+const economyCell = { col: 21, row: 90 };
+const towerCell = { col: 31, row: 94 };
+const formatCell = (cell) => `(${cell.col}, ${cell.row})`;
+
+export async function runExpeditionSmoke(page, url) {
+  const game = await openWideGame(page, url);
+  const cards = Object.fromEntries(Object.keys(starterCards).map((kind) => [kind, page.locator(`#card-${kind}`)]));
+  const economyBalance = page.locator('#economy-balance');
+  const building = page.locator('#expedition-building');
+  const feedback = page.locator('#expedition-feedback');
+  const makeCard = page.locator('#make-card');
+  const spawnEnemy = page.locator('#expedition-spawn');
+
+  async function balance() {
+    const value = await economyBalance.textContent();
+    const match = value.match(/\d+/);
+    assert.ok(match, `Expected a visible economy balance, saw ${value}`);
+    return Number(match[0]);
+  }
+
+  async function inventory() {
+    const counts = await Promise.all(Object.entries(cards).map(async ([kind, button]) => {
+      const value = await button.getAttribute('data-count');
+      assert.match(value ?? '', /^\d+$/, `Expected a card count for ${kind}`);
+      return [kind, Number(value)];
+    }));
+    return Object.fromEntries(counts);
+  }
+
+  async function buildingAt(cell) {
+    await game.inspect(cell, '空地');
+    await page.clock.runFor(32);
+    return building.textContent();
+  }
+
+  async function selectCard(kind) {
+    const button = cards[kind];
+    if (await button.getAttribute('aria-pressed') !== 'true') await button.click();
+    assert.equal(await button.getAttribute('aria-pressed'), 'true');
+  }
+
+  async function clickAt(cell, ...details) {
+    await game.inspect(cell, ...details);
+    await page.mouse.down({ button: 'left' });
+    await page.mouse.up({ button: 'left' });
+    await page.clock.runFor(32);
+  }
+
+  async function build(kind, cell) {
+    await selectCard(kind);
+    await clickAt(cell, '空地');
+  }
+
+  async function manufacture() {
+    const startBalance = await balance();
+    const before = await inventory();
+    await makeCard.click();
+    await page.clock.runFor(32);
+    assert.equal(await balance(), startBalance - ECONOMY_PROTOTYPE.drawCost);
+    const after = await inventory();
+    const differences = Object.keys(before).map((kind) => after[kind] - before[kind]);
+    assert.deepEqual(differences.toSorted((a, b) => a - b), [0, 0, 1]);
+    return differences;
+  }
+
+  const roundUrl = page.url();
+  async function assertFreshRound() {
+    assert.equal(page.url(), roundUrl);
+    assert.deepEqual(await game.position(), GENERATED_SPAWN);
+    assert.equal(await balance(), 8);
+    assert.deepEqual(await inventory(), starterCards);
+    for (const button of Object.values(cards)) assert.equal(await button.getAttribute('aria-pressed'), 'false');
+    assert.match(await buildingAt(technologyCell), /^科技设施 \(17, 90\)/);
+    assert.ok(await makeCard.isEnabled());
+  }
+
+  async function reset() {
+    await game.holdKey('KeyR', () => page.clock.runFor(48));
+    await assertFreshRound();
+  }
+
+  assert.ok(await page.locator('#expedition-panel').isVisible());
+  assert.ok(await page.locator('#defense-panel').isHidden());
+  await assertFreshRound();
+
+  const walls = [16, 17, 18, 19].map((col) => ({ col, row: 88 }));
+  const [anchor] = walls;
+  const released = walls.at(-1);
+  assert.equal(await buildingAt(anchor), '—');
+  for (const key of ['KeyB', 'KeyT']) await game.holdKey(key, () => page.clock.runFor(48));
+  assert.equal(await buildingAt(anchor), '—', 'Debug keys must not place free buildings in play mode');
+  await game.inspect(technologyCell, '空地');
+  await game.holdKey('KeyX', () => page.clock.runFor(48));
+  assert.match(await buildingAt(technologyCell), /^科技设施/, 'Debug key X must not remove a play-mode building');
+  assert.deepEqual(await inventory(), starterCards);
+
+  const dirt = { col: GENERATED_SPAWN.col, row: GENERATED_SPAWN.row + 1 };
+  await selectCard('wall');
+  await clickAt(dirt, '可挖地形', 'HP 5/5');
+  await game.inspect(dirt, '可挖地形', 'HP 5/5');
+  assert.deepEqual(await inventory(), starterCards, 'An invalid placement must not consume cards');
+  assert.equal(await balance(), 8, 'An invalid placement must not consume economy');
+  assert.equal(await cards.wall.getAttribute('aria-pressed'), 'true');
+
+  for (const [index, cell] of walls.entries()) {
+    await build('wall', cell);
+    assert.equal((await inventory()).wall, starterCards.wall - index - 1);
+  }
+  assert.equal(await feedback.textContent(), `已合成城墙 Lv.2 ${formatCell(anchor)}`);
+  assert.match(await buildingAt(anchor), /^城墙 \(16, 88\) · \d+ HP · Lv\.2$/);
+  for (const cell of walls.slice(1)) assert.equal(await buildingAt(cell), '—');
+  await game.walkTo(released);
+
+  await build('economy', economyCell);
+  assert.match(await buildingAt(economyCell), /^经济建筑 \(21, 90\)/);
+  assert.equal((await inventory()).economy, 0);
+  assert.equal(await balance(), 8, 'Building from inventory must not charge economy');
+  await page.clock.runFor(ECONOMY_PROTOTYPE.productionIntervalMs - 300);
+  assert.equal(await balance(), 8, 'The economy building must wait for its production interval');
+  await page.clock.runFor(450);
+  assert.equal(await balance(), 8 + ECONOMY_PROTOTYPE.productionAmount);
+
+  const firstDraw = await manufacture();
+  await reset();
+  assert.equal(await buildingAt(anchor), '—');
+  assert.equal(await buildingAt(economyCell), '—');
+  assert.deepEqual(await manufacture(), firstDraw, 'The first draw must repeat after the same-seed reset');
+  await manufacture();
+  assert.ok(await makeCard.isDisabled(), 'Manufacture must be unavailable when the cost is not covered');
+
+  await reset();
+  await game.openLineTo({ col: 28, row: 92 });
+  await game.settleView();
+  await build('tower', towerCell);
+  assert.match(await buildingAt(towerCell), /^防御塔 \(31, 94\)/);
+  assert.equal((await inventory()).tower, starterCards.tower - 1);
+  await spawnEnemy.click();
+  await page.clock.runFor(64);
+  assert.equal(await page.locator('#defense-stats').getAttribute('data-tower-kills'), '1');
+  assert.equal(await page.locator('#defense-stats').getAttribute('data-wall-impacts'), '0');
+  assert.equal(await balance(), 8 + ECONOMY_PROTOTYPE.towerKillReward);
+}

@@ -22,7 +22,7 @@ function assertSameColor(actual, expected, message) {
     `${message}: expected ${expected}, saw ${actual}`);
 }
 
-async function openWideGame(page, url) {
+export async function openWideGame(page, url) {
   const board = page.getByRole('region', { name: '格子地图' }).locator('canvas');
   const playerCell = page.locator('#player-cell');
   const viewport = page.locator('#visible-chunks');
