@@ -1,16 +1,17 @@
 import type { Building, TowerAxis } from "./buildings.ts";
 import type { EnemyKind, EnemyState } from "./defense-simulation.ts";
-import { ENEMY_RADIUS } from "./enemy-contact.ts";
-import { TILE_SIZE } from "./player.ts";
 import type { Point } from "./player.ts";
 import type { GridPosition, TerrainReader } from "./terrain.ts";
-import { evolvedTargetDistanceSquared } from "./tower-attack.ts";
+import {
+  evolvedTargetDistanceSquared, hasTowerLineOfSight, intersectsPiercingBeam, PIERCING_FALLBACK,
+  TARGET_DISTANCE_EPSILON, towerSearchRadius,
+} from "./tower-attack.ts";
 import type { EvolvedTowerCoverage } from "./tower-attack.ts";
 
 type TowerKind = "standard" | "piercing" | "burst";
 type ObservedEnemy = Pick<EnemyState, "id" | "hp" | "kind">;
 type ExposureEnd = "left-area" | "tower-kill" | "wall-impact" | "player-contact" | "device-contact" | "tower-inactive" | "battle-ended";
-type Candidate = "outside" | "legal" | "occluded" | "off-axis";
+type Candidate = "outside" | "legal" | "fallback" | "occluded" | "off-axis";
 export type TowerHitRole = "primary" | "additional";
 
 export interface DiagnosticTowerHit {
@@ -49,6 +50,8 @@ interface TowerObservation {
   readonly range: number;
   readonly damage: number;
   readonly coverage?: EvolvedTowerCoverage;
+  readonly bodyAware?: boolean;
+  readonly fallbackRange?: number;
 }
 
 function newDecisions() {
@@ -143,17 +146,20 @@ function exposure({ enemy, enteredAtMs }: OpenExposure, leftAtMs: number, reason
     durationMs: leftAtMs - enteredAtMs, hpAfter: enemy.hp, reason };
 }
 
-function classifyCandidate(map: TerrainReader, tower: Building, { range, coverage }: TowerObservation, position: Point): Candidate {
+function classifyCandidate(map: TerrainReader, tower: Building, observation: TowerObservation, position: Point): Candidate {
+  const { range, coverage, bodyAware = false, fallbackRange } = observation;
   const dx = position.x - tower.cell.col - 0.5;
   const dy = position.y - tower.cell.row - 0.5;
-  const nearby = dx ** 2 + dy ** 2 <= range ** 2;
+  const distance = dx ** 2 + dy ** 2;
+  const nearby = distance <= towerSearchRadius(range, bodyAware) ** 2 + (bodyAware ? TARGET_DISTANCE_EPSILON : 0);
   if (!coverage) return nearby ? "legal" : "outside";
   if (evolvedTargetDistanceSquared(map, coverage, position) !== undefined) return "legal";
 
   if (coverage.kind === "piercing") {
-    const forward = Math.abs(coverage.axis === "horizontal" ? dx : dy);
-    const cross = Math.abs(coverage.axis === "horizontal" ? dy : dx);
-    if (cross <= ENEMY_RADIUS / TILE_SIZE && forward <= range) return "occluded";
+    if (fallbackRange !== undefined && distance <= towerSearchRadius(fallbackRange, true) ** 2 + TARGET_DISTANCE_EPSILON) {
+      return hasTowerLineOfSight(map, coverage.origin, position, coverage.wallSynergy) ? "fallback" : "occluded";
+    }
+    if (intersectsPiercingBeam(coverage, position, range, range)) return "occluded";
     if (nearby) return "off-axis";
   } else if (nearby) {
     return "occluded";
@@ -191,7 +197,7 @@ export class TowerCombatDiagnostics {
       const position = positionOf(enemy);
       const candidate = classifyCandidate(this.map, tower, observation, position);
       if (candidate === "outside") continue;
-      if (candidate !== "legal") {
+      if (candidate !== "legal" && candidate !== "fallback") {
         if (candidate === "occluded") {
           hasOccluded = true;
           decisions.occludedTargets += 1;
@@ -212,7 +218,8 @@ export class TowerCombatDiagnostics {
         open.set(enemy.id, entry);
       }
       entry.lastSeenAtMs = timeMs;
-      if (cooling && enemy.hp <= observation.damage && entry.finishNotBefore !== readyAtMs) {
+      const damage = candidate === "fallback" ? PIERCING_FALLBACK.damage : observation.damage;
+      if (cooling && enemy.hp <= damage && entry.finishNotBefore !== readyAtMs) {
         entry.finishNotBefore = readyAtMs;
         decisions.cooldownFinish += 1;
       }

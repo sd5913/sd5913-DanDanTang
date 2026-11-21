@@ -35,4 +35,4 @@ Node.js and npm run local development and tests. Git records changes. Microsoft 
 
 ## AI Usage and Disclosure
 
-I used ChatGPT to discuss game design options, plan development, and draft documentation. I used Codex to help implement gameplay and UI, debug issues, develop and run automated tests, and update documentation. I evaluated the design suggestions and was responsible for the final design decisions. The progress reports record automated results and human playtesting separately.
+I used ChatGPT to discuss game design options, plan development, and draft documentation. I used Codex to help implement gameplay and UI, reproduce bugs with controlled simulations and browser tests, develop and run automated tests, and update documentation. I evaluated the design suggestions and was responsible for the final design decisions. The progress reports record automated results and human playtesting separately.

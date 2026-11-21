@@ -6,11 +6,17 @@ import type { RoundSpeed } from "./expedition-round.ts";
 import { readMidgameExperiment } from "./midgame-experiments.ts";
 import type { MidgameExperimentId } from "./midgame-experiments.ts";
 
+const currentTowerTuning: TowerTuning = Object.freeze({
+  ...PLAYTEST_TOWER_TUNING,
+  piercingFallbackRange: 4,
+  burstRange: 5,
+});
+
 export const PLAYTEST_PROFILE = Object.freeze({
   difficulty: "challenge",
   buildingBalance: "w25",
   midgame: "combined",
-  towerTuning: PLAYTEST_TOWER_TUNING,
+  towerTuning: currentTowerTuning,
 } as const);
 
 interface LaunchConfig {
@@ -27,6 +33,7 @@ interface LaunchConfig {
   readonly manualMerge: boolean;
   readonly evacuation: boolean;
   readonly towerTargeting: boolean;
+  readonly towerWallSynergy: boolean;
   readonly towerTuning: TowerTuning;
 }
 
@@ -38,7 +45,7 @@ export function resolveLaunch(params: URLSearchParams, environment: "production"
       ...PLAYTEST_PROFILE,
       diagnostics: false, mode: "play", fixture: null,
       fogEnabled: true, roundSpeed: false, debugControls: false, towerEvolution: true, manualMerge: true,
-      evacuation: true, towerTargeting: true,
+      evacuation: true, towerTargeting: true, towerWallSynergy: true,
     };
   }
 
@@ -59,6 +66,7 @@ export function resolveLaunch(params: URLSearchParams, environment: "production"
     manualMerge: params.get("merge") === "manual",
     evacuation: params.get("evacuation") === "1",
     towerTargeting: params.get("targeting") === "1",
+    towerWallSynergy: params.get("wallSynergy") === "1",
     towerTuning: CONTROL_TOWER_TUNING,
   };
 }

@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict';
-import { CONTROL_TOWER_TUNING, PLAYTEST_TOWER_TUNING, evolvedTowerAttributes } from '../src/building-balance.ts';
+import { CONTROL_TOWER_TUNING, evolvedTowerAttributes } from '../src/building-balance.ts';
+import { PLAYTEST_PROFILE } from '../src/launch-config.ts';
 import { GENERATED_SPAWN } from '../src/generated-map.ts';
 import { TILE_SIZE } from '../src/player.ts';
+import { piercingFallbackRange } from '../src/tower-attack.ts';
 import { readCardInventory } from './browser-card-feedback.mjs';
 import { advanceUntil, startFirstWave } from './browser-challenge.mjs';
 import { fundFourTowerCards } from './browser-midgame-economy.mjs';
@@ -151,7 +153,8 @@ async function confirmManualEvolution(page, run, { kind, name, direction, retain
   await page.clock.runFor(16);
   assert.equal(await run.building.textContent(), name + ' ' + label(retained) + ' · 1 HP');
   const damage = attack.kind === 'piercing' ? '伤害 5 · 最多 4 个目标' : '主伤害 4 · 溅射 2 · 半径 ' + attack.radius + ' 格';
-  const fallback = attack.kind === 'piercing' ? ' · 备用 3 格 / 2 点（与主攻共用冷却）' : '';
+  const fallback = attack.kind === 'piercing'
+    ? ' · 备用 ' + piercingFallbackRange(PLAYTEST_PROFILE.towerTuning) + ' 格 / 2 点（与主攻共用冷却）' : '';
   assert.equal(await page.locator('#expedition-building-stats').textContent(),
     direction + ' · ' + damage + ' · 射程 ' + attack.range + ' 格 · 间隔 ' + attack.intervalMs + ' ms' + fallback);
   for (const tile of released) {
@@ -169,7 +172,7 @@ async function confirmManualEvolution(page, run, { kind, name, direction, retain
 
 export async function preparePaidEvolvedTower(page, baseUrl, kind, { playtest = false, checkRepath = false, readyOnly = false } = {}) {
   const { name, direction, targets, builders, evolution } = cases[kind];
-  const tuning = playtest ? PLAYTEST_TOWER_TUNING : CONTROL_TOWER_TUNING;
+  const tuning = playtest ? PLAYTEST_PROFILE.towerTuning : CONTROL_TOWER_TUNING;
   const attack = evolvedTowerAttributes(evolution, 'ordinary', tuning);
   const [retained, ...released] = targets;
   const target = released.at(-1);

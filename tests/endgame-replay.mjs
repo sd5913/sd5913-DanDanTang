@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { pathToFileURL } from "node:url";
+import { PLAYTEST_TOWER_TUNING } from "../src/building-balance.ts";
 import { isWithinSynthesisRange } from "../src/buildings.ts";
 import { DefenseSimulation } from "../src/defense-simulation.ts";
 import { generateExpeditionBiomes } from "../src/expedition-biomes.ts";
@@ -15,7 +16,7 @@ import { MiningSession } from "../src/mining.ts";
 import { TerrainMap } from "../src/terrain.ts";
 import { OpeningRun } from "./challenge-opening.mjs";
 
-const { difficulty, buildingBalance, midgame, towerTuning } = PLAYTEST_PROFILE;
+const { difficulty, buildingBalance, midgame } = PLAYTEST_PROFILE;
 const frameMs = 25;
 const openingSite = { col: 29, row: 94 };
 const openingBuilder = { col: 28, row: 94 };
@@ -107,7 +108,8 @@ class EndgameRun extends OpeningRun {
         this.simulation.recordEvacuationDamage(evacuationBatch, damage);
       }
       if (this.finished) this.resolve();
-    }, true, { towerTuning: rules.towerTuning ?? towerTuning, towerTargeting: true });
+    }, true, { towerTuning: rules.towerTuning ?? PLAYTEST_TOWER_TUNING, towerTargeting: true,
+      towerWallSynergy: rules.towerWallSynergy });
     this.initial = this.economicState();
   }
 
@@ -496,5 +498,6 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   const seedFilter = process.argv.find((arg) => arg.startsWith("--seed="))?.split("=")[1];
   const seeds = seedFilter === undefined ? [...fixedSeeds, randomSeed] : [Number(seedFilter)];
   const data = seeds.flatMap((seed) => (selected ? [selected] : strategies).map((strategy) => replayEndgame(seed, strategy)));
-  console.log(JSON.stringify({ randomSeed, stepMs: frameMs, profile: PLAYTEST_PROFILE, data }));
+  const profile = { ...PLAYTEST_PROFILE, towerTuning: PLAYTEST_TOWER_TUNING };
+  console.log(JSON.stringify({ randomSeed, stepMs: frameMs, profile, data }));
 }

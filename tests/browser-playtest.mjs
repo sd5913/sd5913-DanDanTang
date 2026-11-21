@@ -47,7 +47,7 @@ export async function runPlaytestSmoke(page, baseUrl) {
 
   const seed = 9;
   const oldExperimentUrl = '/?mode=defense&map=single&difficulty=baseline&build=w15&midgame=control'
-    + '&speed=test&fog=off&debug=1&diagnostics=1';
+    + '&speed=test&fog=off&debug=1&diagnostics=1&wallSynergy=0&piercingFallbackRange=99&burstRange=99';
   const run = await openChallenge(page, baseUrl, seed, undefined, undefined, { playtestUrl: oldExperimentUrl });
   await assertFreshPlaytest(page, seed);
   await run.game.settleView();

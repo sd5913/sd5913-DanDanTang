@@ -22,7 +22,7 @@ const params = new URLSearchParams(window.location.search);
 const environment = import.meta.env.MODE === "regression" ? "regression" : import.meta.env.DEV ? "development" : "production";
 const {
   diagnostics, mode, fixture, difficulty, buildingBalance, midgame, fogEnabled, roundSpeed, debugControls,
-  towerEvolution, towerTuning, manualMerge, evacuation, towerTargeting,
+  towerEvolution, towerTuning, manualMerge, evacuation, towerTargeting, towerWallSynergy,
 } = resolveLaunch(params, environment);
 const defense = mode === "defense";
 const play = mode === "play";
@@ -59,6 +59,7 @@ const defenseOptions = play && world
       manualMerge,
       evacuation,
       towerTargeting,
+      towerWallSynergy,
     }
   : !defense ? undefined : wide
     ? { entry: GENERATED_ENEMY_ENTRY, target: GENERATED_GOAL }

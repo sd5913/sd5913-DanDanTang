@@ -21,7 +21,7 @@ import type { MidgameExperimentId } from "./midgame-experiments.ts";
 import { cellCenter, TILE_SIZE, worldToCell } from "./player.ts";
 import type { Player, Point } from "./player.ts";
 import type { GridPosition, TerrainMap } from "./terrain.ts";
-import { buildEvolvedTowerCoverage, PIERCING_FALLBACK } from "./tower-attack.ts";
+import { buildEvolvedTowerCoverage, piercingFallbackRange, PIERCING_FALLBACK } from "./tower-attack.ts";
 import { WaveEconomyHistory } from "./wave-economy-history.ts";
 
 const SHOT_VISIBLE_MS = 140;
@@ -78,6 +78,7 @@ export interface DefenseScenario {
   readonly towerTuning?: TowerTuning;
   readonly evacuation?: boolean;
   readonly towerTargeting?: boolean;
+  readonly towerWallSynergy?: boolean;
   readonly towerTargetingDiagnostics?: "trace" | "metrics";
 }
 
@@ -129,7 +130,7 @@ export class DefenseDebug {
     this.simulation = new DefenseSimulation(
       map, scenario.entry, scenario.target, (event, metadata) => this.onEvent(event, metadata), scenario.worldSeed !== undefined,
       { towerTuning: scenario.towerTuning, towerTargeting: scenario.towerTargeting,
-        towerTargetingDiagnostics: scenario.towerTargetingDiagnostics },
+        towerWallSynergy: scenario.towerWallSynergy, towerTargetingDiagnostics: scenario.towerTargetingDiagnostics },
     );
     this.graphics = scene.add.graphics().setDepth(1.5);
     this.labelLayer = scene.add.layer().setDepth(2.5);
@@ -427,12 +428,13 @@ export class DefenseDebug {
     const evolution = tower.evolution;
     if (evolution?.kind === "piercing") {
       const attributes = evolvedTowerAttributes(evolution, biome, this.scenario.towerTuning);
-      const { origin, axis, negativeReach, positiveReach } = buildEvolvedTowerCoverage(this.map, tower.cell, attributes, true);
+      const { origin, axis, negativeReach, positiveReach } = buildEvolvedTowerCoverage(
+        this.map, tower.cell, attributes, true, this.scenario.towerWallSynergy);
       const onAxis = (distance: number): Point => axis === "horizontal" ? { x: origin.x + distance, y: origin.y }
         : { x: origin.x, y: origin.y + distance };
       this.drawPiercingLine(origin, onAxis(-negativeReach), view, 2, 0.65);
       this.drawPiercingLine(origin, onAxis(positiveReach), view, 2, 0.65);
-      this.drawRangeCircle(x, y, PIERCING_FALLBACK.range * TILE_SIZE, 0xffc88b, 0.65);
+      this.drawRangeCircle(x, y, piercingFallbackRange(this.scenario.towerTuning) * TILE_SIZE, 0xffc88b, 0.65);
       return;
     }
     const { range } = evolution ? evolvedTowerAttributes(evolution, biome, this.scenario.towerTuning)
@@ -461,7 +463,7 @@ export class DefenseDebug {
       const damage = attack.kind === "piercing" ? `伤害 ${attack.damage} · 最多 ${attack.maxTargets} 个目标`
         : `主伤害 ${attack.damage} · 溅射 ${attack.splashDamage} · 半径 ${attack.radius} 格`;
       const fallback = this.scenario.towerTargeting && attack.kind === "piercing"
-        ? ` · 备用 ${PIERCING_FALLBACK.range} 格 / ${PIERCING_FALLBACK.damage} 点（与主攻共用冷却）` : "";
+        ? ` · 备用 ${piercingFallbackRange(this.scenario.towerTuning)} 格 / ${PIERCING_FALLBACK.damage} 点（与主攻共用冷却）` : "";
       return `${evolutionDirection(evolution)} · ${damage} · 射程 ${range} · 间隔 ${attack.intervalMs} ms${fallback}`;
     } else if (kind === "tower") {
       const { damage, range, intervalMs } = towerAttributes(buildingBalance, level, biome);

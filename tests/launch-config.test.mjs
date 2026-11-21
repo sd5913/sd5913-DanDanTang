@@ -1,26 +1,36 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { BUILDING_BALANCE_PROFILES, CONTROL_TOWER_TUNING, PLAYTEST_TOWER_TUNING } from "../src/building-balance.ts";
+import { BUILDING_BALANCE_PROFILES, CONTROL_TOWER_TUNING, evolvedTowerAttributes } from "../src/building-balance.ts";
 import { DIFFICULTY_PROFILES } from "../src/expedition-difficulty.ts";
 import { resolveLaunch } from "../src/launch-config.ts";
 import { MIDGAME_EXPERIMENTS, waveDeployment } from "../src/midgame-experiments.ts";
+import { piercingFallbackRange } from "../src/tower-attack.ts";
 
 const publicLaunch = {
   diagnostics: false, mode: "play", fixture: null,
   difficulty: "challenge", buildingBalance: "w25", midgame: "combined",
   fogEnabled: true, roundSpeed: false, debugControls: false, towerEvolution: true, manualMerge: true,
-  evacuation: true, towerTargeting: true,
-  towerTuning: PLAYTEST_TOWER_TUNING,
+  evacuation: true, towerTargeting: true, towerWallSynergy: true,
+  towerTuning: { burstRadius: 2, piercingIntervalMs: 750, piercingFallbackRange: 4, burstRange: 5 },
 };
 
 test("production opens the unified playtest and ignores experiment URLs", () => {
   assert.deepEqual(resolveLaunch(new URLSearchParams(), "production"), publicLaunch);
-  assert.deepEqual(publicLaunch.towerTuning, { burstRadius: 2, piercingIntervalMs: 750 });
   assert.deepEqual(CONTROL_TOWER_TUNING, { burstRadius: 1.25, piercingIntervalMs: 900 });
   const overrides = new URLSearchParams(
-    "diagnostics=1&mode=defense&map=single&difficulty=baseline&build=w15&midgame=tier&fog=off&speed=test&debug=1&evolution=0&merge=auto&evacuation=0&targeting=0&burstRadius=2&piercingIntervalMs=123",
+    "diagnostics=1&mode=defense&map=single&difficulty=baseline&build=w15&midgame=tier&fog=off&speed=test&debug=1&evolution=0&merge=auto&evacuation=0&targeting=0&wallSynergy=0&piercingFallbackRange=99&burstRange=99&burstRadius=2&piercingIntervalMs=123",
   );
   assert.deepEqual(resolveLaunch(overrides, "production"), publicLaunch);
+});
+
+test("the public ranges keep splash radius, axis range, and the highland bonus independent", () => {
+  const { towerTuning } = resolveLaunch(new URLSearchParams(), "production");
+  const piercer = evolvedTowerAttributes({ kind: "piercing", axis: "horizontal" }, "highland", towerTuning);
+  const burst = evolvedTowerAttributes({ kind: "burst" }, "highland", towerTuning);
+  assert.equal(piercingFallbackRange(towerTuning), 4);
+  assert.deepEqual([piercer.baseRange, piercer.range, piercer.damage, piercer.maxTargets, piercer.intervalMs], [7, 9, 5, 4, 750]);
+  assert.deepEqual([burst.baseRange, burst.range, burst.radius, burst.damage, burst.splashDamage, burst.intervalMs],
+    [5, 7, 2, 4, 2, 650]);
 });
 
 test("the unified profile resolves to the existing opening, defense and midgame settings", () => {
@@ -46,11 +56,12 @@ test("development requires an opt-in while a dedicated regression build accepts 
     diagnostics: true, mode: "play", fixture: null, difficulty: "challenge",
     buildingBalance: "w35", midgame: "armored", fogEnabled: false, roundSpeed: "wait-test",
     debugControls: true, towerEvolution: false, manualMerge: false, towerTuning: CONTROL_TOWER_TUNING,
-    evacuation: false, towerTargeting: false,
+    evacuation: false, towerTargeting: false, towerWallSynergy: false,
   });
   assert.deepEqual(resolveLaunch(new URLSearchParams(flags), "regression"), development);
   assert.equal(resolveLaunch(new URLSearchParams(flags + "&evolution=1"), "regression").towerEvolution, true);
   assert.equal(resolveLaunch(new URLSearchParams(flags + "&merge=manual"), "regression").manualMerge, true);
+  assert.equal(resolveLaunch(new URLSearchParams(flags + "&wallSynergy=1"), "regression").towerWallSynergy, true);
   const baseline = resolveLaunch(new URLSearchParams("mode=play&difficulty=b&build=w15&midgame=combined"), "regression");
   assert.deepEqual([baseline.difficulty, baseline.buildingBalance, baseline.midgame], ["b", "control", "control"]);
   assert.equal(resolveLaunch(new URLSearchParams("map=single"), "regression").fixture, "single");

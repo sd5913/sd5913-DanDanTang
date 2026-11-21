@@ -90,11 +90,17 @@ export async function openChallenge(page, baseUrl, seed, build, experiment, { pl
     assert.equal(await cash(), balance);
   }
 
-  async function mine(target, remainingHp = dirtMaxHp) {
+  async function mine(target, remainingHp = dirtMaxHp, { untilMined = false } = {}) {
     await game.inspect(target, '可挖地形', 'HP ' + remainingHp + '/5');
     await page.mouse.down({ button: 'left' });
     try {
-      await page.clock.runFor(remainingHp * attackIntervalMs + 64);
+      if (untilMined) {
+        await page.clock.runFor((remainingHp - 1) * attackIntervalMs + 16);
+        const hover = page.locator('#hover-cell');
+        for (let elapsed = 0; elapsed < attackIntervalMs + 64 && !(await hover.textContent()).includes('空地'); elapsed += 16) {
+          await page.clock.runFor(16);
+        }
+      } else await page.clock.runFor(remainingHp * attackIntervalMs + 64);
     } finally {
       await page.mouse.up({ button: 'left' });
     }

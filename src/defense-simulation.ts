@@ -15,7 +15,7 @@ import type { Point } from "./player.ts";
 import type { GridPosition, TerrainMap } from "./terrain.ts";
 import {
   buildEvolvedTowerCoverage, evolvedTargetDistanceSquared, hasTowerLineOfSight, PIERCING_FALLBACK,
-  TARGET_DISTANCE_EPSILON, towerSearchRadius,
+  piercingFallbackRange, TARGET_DISTANCE_EPSILON, towerSearchRadius,
 } from "./tower-attack.ts";
 import { TowerTargetingDiagnostics } from "./tower-targeting-diagnostics.ts";
 import type { PiercingCoverage } from "./tower-attack.ts";
@@ -157,6 +157,7 @@ export interface DefenseSimulationOptions {
   readonly towerTuning?: TowerTuning;
   readonly towerDiagnostics?: boolean;
   readonly towerTargeting?: boolean;
+  readonly towerWallSynergy?: boolean;
   readonly towerTargetingDiagnostics?: "trace" | "metrics";
 }
 
@@ -209,6 +210,7 @@ export class DefenseSimulation {
   private readonly towerTuning?: TowerTuning;
   private readonly combatDiagnostics?: TowerCombatDiagnostics;
   private readonly towerTargeting: boolean;
+  private readonly towerWallSynergy: boolean;
   private readonly targetingDiagnostics?: TowerTargetingDiagnostics;
   private readonly waveCombat = new WaveCombatMetrics();
   private readonly evacuationCombat = new EvacuationCombatLedger();
@@ -243,6 +245,7 @@ export class DefenseSimulation {
     this.towerTuning = options.towerTuning;
     if (options.towerDiagnostics) this.combatDiagnostics = new TowerCombatDiagnostics(map);
     this.towerTargeting = options.towerTargeting ?? false;
+    this.towerWallSynergy = options.towerWallSynergy ?? false;
     if (options.towerTargetingDiagnostics) this.targetingDiagnostics = new TowerTargetingDiagnostics(options.towerTargetingDiagnostics);
     this.navigation = new EnemyNavigation(map);
   }
@@ -401,6 +404,7 @@ export class DefenseSimulation {
     if (!Number.isFinite(deltaMs) || deltaMs <= 0) return;
     const target = player && ("position" in player ? player : { cell: player, position: cellCenter(player) });
     this.timeMs += deltaMs;
+    if (this.targetingDiagnostics?.detailed) this.targetingDiagnostics.beginStep();
     for (const enemy of this.units.values()) this.advanceEnemy(enemy, deltaMs, target);
     for (const building of this.map.getBuildings()) {
       if (building.kind === "tower") this.fireTower(building);
@@ -750,10 +754,12 @@ export class DefenseSimulation {
   }
 
   private impactWall(enemy: EnemyState, cell: GridPosition, wallId: string): void {
+    const traceRevision = this.targetingDiagnostics?.detailed ? this.map.revision : undefined;
     const impact = this.map.impactWall(cell, wallId, enemy.wallDamage);
     if (!impact) return;
     this.units.delete(enemy.id);
     this.combatDiagnostics?.endEnemy(enemy.id, this.timeMs, "wall-impact");
+    if (traceRevision !== undefined) this.targetingDiagnostics?.wallImpact(enemy, enemyPosition(enemy), traceRevision);
     this.counts.wallImpacts += 1;
     if (impact.destroyed) this.counts.wallsDestroyed += 1;
     this.waveCombat.resolve(enemy.id, "wallImpacts", this.timeMs, impact.damage, impact.destroyed);
@@ -800,13 +806,14 @@ export class DefenseSimulation {
     if (tower.evolution) {
       const attributes = evolvedTowerAttributes(tower.evolution, biome, this.towerTuning);
       const coverage = attributes.kind === "piercing" ? this.piercingCoverage(tower.cell, attributes)
-        : buildEvolvedTowerCoverage(this.map, tower.cell, attributes, this.towerTargeting);
-      this.combatDiagnostics?.observe(tower, { ...attributes, coverage }, this.units.values(), enemyPosition, this.timeMs, readyAt);
-      this.targetingDiagnostics?.sample(this.map, tower, { range: attributes.range, origin, coverage, bodyAware: this.towerTargeting },
+        : buildEvolvedTowerCoverage(this.map, tower.cell, attributes, this.towerTargeting, this.towerWallSynergy);
+      const fallbackRange = this.towerTargeting && attributes.kind === "piercing" ? piercingFallbackRange(this.towerTuning) : undefined;
+      this.combatDiagnostics?.observe(tower, { ...attributes, coverage, fallbackRange, bodyAware: this.towerTargeting }, this.units.values(), enemyPosition, this.timeMs, readyAt);
+      this.targetingDiagnostics?.sample(this.map, tower, { range: attributes.range, origin, coverage, fallbackRange, bodyAware: this.towerTargeting },
         this.units.values(), enemyPosition, this.timeMs, readyAt);
     } else {
       const attributes = towerAttributes(this.map.buildingBalance, tower.level, biome);
-      this.combatDiagnostics?.observe(tower, attributes, this.units.values(), enemyPosition, this.timeMs, readyAt);
+      this.combatDiagnostics?.observe(tower, { ...attributes, bodyAware: this.towerTargeting }, this.units.values(), enemyPosition, this.timeMs, readyAt);
       this.targetingDiagnostics?.sample(this.map, tower, { range: attributes.range, origin, bodyAware: this.towerTargeting },
         this.units.values(), enemyPosition, this.timeMs, readyAt);
     }
@@ -819,7 +826,7 @@ export class DefenseSimulation {
     }
     let coverage = this.towerCoverage.get(cell);
     if (!coverage) {
-      coverage = buildEvolvedTowerCoverage(this.map, cell, attributes, this.towerTargeting);
+      coverage = buildEvolvedTowerCoverage(this.map, cell, attributes, this.towerTargeting, this.towerWallSynergy);
       this.towerCoverage.set(cell, coverage);
     }
     return coverage;
@@ -831,7 +838,7 @@ export class DefenseSimulation {
     const negative: PiercingHit[] = [];
     const positive: PiercingHit[] = [];
     let fallback: TowerStrike | undefined;
-    let closestFallback = towerSearchRadius(PIERCING_FALLBACK.range, true) ** 2 + TARGET_DISTANCE_EPSILON;
+    let closestFallback = towerSearchRadius(piercingFallbackRange(this.towerTuning), true) ** 2 + TARGET_DISTANCE_EPSILON;
     for (const enemy of this.units.values()) {
       if (enemy.hp <= 0) continue;
       const position = enemyPosition(enemy);
@@ -840,7 +847,7 @@ export class DefenseSimulation {
         if (!this.towerTargeting || negative.length || positive.length) continue;
         const squared = (position.x - origin.x) ** 2 + (position.y - origin.y) ** 2;
         if (squared > closestFallback || (fallback && squared === closestFallback)
-          || !hasTowerLineOfSight(this.map, origin, position)) continue;
+          || !hasTowerLineOfSight(this.map, origin, position, this.towerWallSynergy)) continue;
         fallback = { enemy, position, rawDamage: PIERCING_FALLBACK.damage };
         closestFallback = squared;
         continue;
@@ -874,7 +881,7 @@ export class DefenseSimulation {
   }
 
   private fireBurstTower(tower: Building, attributes: BurstTowerAttributes): void {
-    const coverage = buildEvolvedTowerCoverage(this.map, tower.cell, attributes, this.towerTargeting);
+    const coverage = buildEvolvedTowerCoverage(this.map, tower.cell, attributes, this.towerTargeting, this.towerWallSynergy);
     let closest = coverage.rangeSquared + (this.towerTargeting ? TARGET_DISTANCE_EPSILON : 0);
     let primary: TowerStrike | undefined;
     for (const enemy of this.units.values()) {
@@ -897,7 +904,7 @@ export class DefenseSimulation {
       const distance = (position.x - center.x) ** 2 + (position.y - center.y) ** 2;
       // Interpolated positions can round a mathematically exact radius slightly outward.
       if (distance > radiusSquared + SPLASH_DISTANCE_EPSILON) continue;
-      if (!hasTowerLineOfSight(this.map, center, position)) {
+      if (!hasTowerLineOfSight(this.map, center, position, this.towerWallSynergy)) {
         this.combatDiagnostics?.recordOccludedSplash(tower);
         continue;
       }

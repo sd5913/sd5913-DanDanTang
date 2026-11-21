@@ -45,9 +45,11 @@ try {
       const { runPlaytestSmoke, runPlaytestCombinedEconomySmoke, runPlaytestBurstSmoke,
         runPlaytestLiveRepathSmoke, runPlaytestMergeResetSmoke, runPlaytestLossSmoke } = await import('./browser-playtest.mjs');
       const { runPlaytestEvacuationLossSmoke, runPlaytestEvacuationVictorySmoke } = await import('./browser-endgame.mjs');
+      const { runPlaytestPiercingWallSmoke, runPlaytestBurstWallSmoke } = await import('./browser-tower-wall.mjs');
       for (const [name, run] of [
         ['unified playtest', runPlaytestSmoke], ['paid piercing, economy and tile reuse', runPlaytestCombinedEconomySmoke],
         ['paid burst', runPlaytestBurstSmoke], ['live repath', runPlaytestLiveRepathSmoke],
+        ['paid piercing and wall', runPlaytestPiercingWallSmoke], ['paid burst and wall', runPlaytestBurstWallSmoke],
         ['new round clears selected merge', runPlaytestMergeResetSmoke],
         ['evacuation victory', runPlaytestEvacuationVictorySmoke], ['evacuation device loss', runPlaytestEvacuationLossSmoke],
         ['normal player loss', runPlaytestLossSmoke],

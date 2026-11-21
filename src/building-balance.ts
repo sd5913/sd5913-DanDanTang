@@ -24,6 +24,8 @@ const BURST_LEVEL_TWO = Object.freeze({ damage: 4, baseRange: 4, intervalMs: 650
 export interface TowerTuning {
   readonly burstRadius: 1.25 | 1.75 | 2;
   readonly piercingIntervalMs: 750 | 900;
+  readonly piercingFallbackRange?: 3 | 4 | 5;
+  readonly burstRange?: 4 | 5 | 6;
 }
 
 export const CONTROL_TOWER_TUNING: TowerTuning = Object.freeze({ burstRadius: 1.25, piercingIntervalMs: 900 });
@@ -82,7 +84,8 @@ export function evolvedTowerAttributes(evolution: TowerEvolution, biome?: BiomeI
   if (evolution.kind === "piercing") {
     return { ...evolution, ...PIERCING_LEVEL_TWO, intervalMs: tuning.piercingIntervalMs, range: PIERCING_LEVEL_TWO.baseRange + rangeBonus };
   }
-  return { ...evolution, ...BURST_LEVEL_TWO, radius: tuning.burstRadius, range: BURST_LEVEL_TWO.baseRange + rangeBonus };
+  const baseRange = tuning.burstRange ?? BURST_LEVEL_TWO.baseRange;
+  return { ...evolution, ...BURST_LEVEL_TWO, baseRange, radius: tuning.burstRadius, range: baseRange + rangeBonus };
 }
 
 export function productionAttributes(balance: BuildingBalanceId, level: 1 | 2, biome?: BiomeId) {
