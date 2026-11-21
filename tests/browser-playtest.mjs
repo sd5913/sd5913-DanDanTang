@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { GENERATED_SPAWN } from '../src/generated-map.ts';
 import { readCardInventory } from './browser-card-feedback.mjs';
-import { advanceUntil, openChallenge, runChallengeLossSmoke, runChallengeVictorySmoke, startFirstWave } from './browser-challenge.mjs';
+import { advanceUntil, openChallenge, runChallengeLossSmoke, startFirstWave } from './browser-challenge.mjs';
 import { preparePaidEvolvedTower } from './browser-tower-evolution.mjs';
 
 const experimentControls = ['#round-difficulty', '#challenge-balance', '#midgame-experiment'];
@@ -227,7 +227,4 @@ export async function runPlaytestBurstSmoke(page, baseUrl) {
   return { seed: 515, evolution: 'burst', radius: run.attack.radius, groupedHits };
 }
 
-export const runPlaytestVictorySmoke = (page, url) => runChallengeVictorySmoke(page, url, 'w25', 'combined', {
-  playtestUrl: '/', reinforceGate: true,
-});
 export const runPlaytestLossSmoke = (page, url) => runChallengeLossSmoke(page, url, 'combined', { playtestUrl: '/' });

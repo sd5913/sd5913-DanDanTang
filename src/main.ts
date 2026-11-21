@@ -22,7 +22,7 @@ const params = new URLSearchParams(window.location.search);
 const environment = import.meta.env.MODE === "regression" ? "regression" : import.meta.env.DEV ? "development" : "production";
 const {
   diagnostics, mode, fixture, difficulty, buildingBalance, midgame, fogEnabled, roundSpeed, debugControls,
-  towerEvolution, towerTuning, manualMerge,
+  towerEvolution, towerTuning, manualMerge, evacuation, towerTargeting,
 } = resolveLaunch(params, environment);
 const defense = mode === "defense";
 const play = mode === "play";
@@ -57,6 +57,8 @@ const defenseOptions = play && world
       towerEvolution,
       towerTuning,
       manualMerge,
+      evacuation,
+      towerTargeting,
     }
   : !defense ? undefined : wide
     ? { entry: GENERATED_ENEMY_ENTRY, target: GENERATED_GOAL }
@@ -66,7 +68,9 @@ document.title = `${phase} · ${play ? "掘进对局" : defense ? "防御灰盒"
 const worldDetails = world ? worldSeedLabel(landscape ? { ...world, generatorVersion: PLAY_GENERATOR_VERSION } : world) : "";
 if (play) {
   document.querySelector("h1")!.textContent = "掘进式生存塔防";
-  document.getElementById("goal-status")!.textContent = "升级至 Lv.2 工具，挖通地形并抵达北端目标区";
+  document.getElementById("goal-status")!.textContent = evacuation
+    ? "升级 Lv.2 工具，抵达北端。靠近装置后按 E 启动撤离防守。"
+    : "升级至 Lv.2 工具，挖通地形并抵达北端目标区";
 }
 if (play && diagnostics) {
   const select = document.querySelector<HTMLSelectElement>("#round-difficulty")!;

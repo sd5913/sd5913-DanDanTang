@@ -9,7 +9,7 @@ import type { EvolvedTowerCoverage } from "./tower-attack.ts";
 
 type TowerKind = "standard" | "piercing" | "burst";
 type ObservedEnemy = Pick<EnemyState, "id" | "hp" | "kind">;
-type ExposureEnd = "left-area" | "tower-kill" | "wall-impact" | "player-contact" | "tower-inactive" | "battle-ended";
+type ExposureEnd = "left-area" | "tower-kill" | "wall-impact" | "player-contact" | "device-contact" | "tower-inactive" | "battle-ended";
 type Candidate = "outside" | "legal" | "occluded" | "off-axis";
 export type TowerHitRole = "primary" | "additional";
 
@@ -275,7 +275,7 @@ export class TowerCombatDiagnostics {
     this.endEnemy(enemy.id, timeMs, "tower-kill");
   }
 
-  endEnemy(enemyId: number, timeMs: number, reason: "tower-kill" | "wall-impact" | "player-contact"): void {
+  endEnemy(enemyId: number, timeMs: number, reason: "tower-kill" | "wall-impact" | "player-contact" | "device-contact"): void {
     for (const state of this.stages.values()) state.close(enemyId, timeMs, reason);
     this.contributions.delete(enemyId);
   }

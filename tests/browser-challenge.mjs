@@ -173,7 +173,7 @@ export async function openChallenge(page, baseUrl, seed, build, experiment, { pl
     assert.equal(await preview.getAttribute('data-state'), 'valid',
       'Technology placement at ' + coords(target) + ' rejected: ' + await preview.getAttribute('data-reason'));
     await clickBoard();
-    assert.equal(Number(await cash()), before - technologyCost);
+    assert.equal(await cash(), (before - technologyCost).toFixed(1));
     assert.deepEqual(await readCardInventory(page), inventory);
     await game.inspect(target, '空地');
     await page.clock.runFor(32);
@@ -185,7 +185,7 @@ export async function openChallenge(page, baseUrl, seed, build, experiment, { pl
     assert.ok(await research.isEnabled());
     const before = Number(await cash());
     await research.click();
-    assert.equal(Number(await cash()), before - researchCost);
+    assert.equal(await cash(), (before - researchCost).toFixed(1));
     assert.equal(await page.locator('#tool-level').textContent(), 'Lv.2');
   }
 
@@ -248,7 +248,7 @@ export async function openChallenge(page, baseUrl, seed, build, experiment, { pl
     await assertVisibleCardDraw(page, kind, before[kind]);
     assert.notEqual(await status.textContent(), firstReady, 'The first-afford cue must clear on purchase');
     assert.deepEqual(await readCardInventory(page), { ...before, [kind]: before[kind] + 1 });
-    assert.equal(Number(await cash()), beforeCash - Number(displayedCost[1]));
+    assert.equal(await cash(), (beforeCash - Number(displayedCost[1])).toFixed(1));
     return kind;
   }
 

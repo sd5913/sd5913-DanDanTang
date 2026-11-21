@@ -2,10 +2,12 @@ import { DEFENSE_CONFIG } from "./defense-simulation.ts";
 import type { WaveDeployment } from "./defense-simulation.ts";
 import type { ExpeditionStage } from "./expedition-difficulty.ts";
 import type { EconomyExperiment } from "./expedition-economy.ts";
+import type { EvacuationBatch } from "./evacuation.ts";
 
 const DENSE_INTERVAL_MS = { opening: 200, middle: 150, late: 100 } as const;
 const LATE_BURST = Object.freeze({ count: 8, pauseMs: 400 });
 const ARMOR_SALT = 0xa012_5f53;
+const EVACUATION_ARMOR_SALT = 0x45dc_f13d;
 export const ARMORED_ENEMY_HP = 14;
 type ArmoredPercent = 15 | 25 | 40;
 const ECONOMY_CONSTRAINTS = { tieredCraft: true, killDecay: true } as const;
@@ -72,4 +74,10 @@ export function waveDeployment(profile: MidgameExperimentId, wave: number, conte
     ...(density === "burst" && wave >= 6 ? { burst: LATE_BURST } : {}),
     ...(armor ? { armor } : {}),
   };
+}
+
+export function evacuationDeployment(profile: MidgameExperimentId, batch: EvacuationBatch,
+  context: WaveContext): WaveDeployment | undefined {
+  const lateWave = 5 + batch;
+  return waveDeployment(profile, lateWave, { ...context, seed: (context.seed ^ EVACUATION_ARMOR_SALT) >>> 0 });
 }

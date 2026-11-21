@@ -8,10 +8,16 @@ import type { Building, BuildingKind } from "./buildings.ts";
 import { boxDistance, ENEMY_RADIUS, sweepPlayerContact } from "./enemy-contact.ts";
 import type { PlayerContact } from "./enemy-contact.ts";
 import type { WaveOrder } from "./expedition-round.ts";
+import { EvacuationCombatLedger } from "./evacuation.ts";
+import type { EvacuationBatch, EvacuationBatchProgress, EvacuationResolution } from "./evacuation.ts";
 import { cellCenter, TILE_SIZE, worldToCell } from "./player.ts";
 import type { Point } from "./player.ts";
 import type { GridPosition, TerrainMap } from "./terrain.ts";
-import { buildEvolvedTowerCoverage, evolvedTargetDistanceSquared, hasTowerLineOfSight } from "./tower-attack.ts";
+import {
+  buildEvolvedTowerCoverage, evolvedTargetDistanceSquared, hasTowerLineOfSight, PIERCING_FALLBACK,
+  TARGET_DISTANCE_EPSILON, towerSearchRadius,
+} from "./tower-attack.ts";
+import { TowerTargetingDiagnostics } from "./tower-targeting-diagnostics.ts";
 import type { PiercingCoverage } from "./tower-attack.ts";
 import { TowerCombatDiagnostics } from "./tower-combat-diagnostics.ts";
 import type { TowerCombatSnapshot, TowerHitRole } from "./tower-combat-diagnostics.ts";
@@ -44,6 +50,7 @@ export interface WaveDeployment {
 const DEFAULT_ENEMY_PROFILE: EnemyProfile = { hp: DEFENSE_CONFIG.enemyHp, contactDamage: 1 };
 const DEFAULT_DEPLOYMENT: WaveDeployment = { intervalMs: DEFENSE_CONFIG.spawnIntervalMs };
 const SPLASH_DISTANCE_EPSILON = 1e-9;
+export const EVACUATION_DEVICE_HALF_SIZE = TILE_SIZE / 4;
 
 interface EnemyMove {
   readonly to: GridPosition;
@@ -57,6 +64,7 @@ export interface EnemyState {
   readonly kind: EnemyKind;
   readonly spawnedAtMs: number;
   readonly waveId?: number;
+  readonly evacuationBatch?: EvacuationBatch;
   cell: GridPosition;
   point: Point;
   hp: number;
@@ -70,7 +78,7 @@ export interface EnemyState {
 }
 
 interface Target {
-  readonly kind: "building" | "player";
+  readonly kind: "building" | "player" | "evacuation";
   readonly cell: GridPosition;
   readonly buildingId?: string;
 }
@@ -93,11 +101,13 @@ interface SpawnRequest {
   readonly waveId?: number;
   readonly enqueuedAtMs: number;
   readonly deployment: WaveDeployment;
+  readonly evacuationBatch?: EvacuationBatch;
 }
 
 /** Visual attack geometry in fractional tile coordinates. */
 export type TowerEffect =
-  | { readonly kind: "piercing"; readonly from: Point; readonly to: Point }
+  | { readonly kind: "piercing"; readonly from: Point; readonly to: Point; readonly halfWidth?: number }
+  | { readonly kind: "piercingFallback"; readonly from: Point; readonly to: Point }
   | { readonly kind: "burst"; readonly from: Point; readonly center: Point; readonly radius: number };
 
 interface TowerStrike {
@@ -114,6 +124,7 @@ export type DefenseEvent =
   | { type: "targetSelected"; enemyId: number; target: Target }
   | { type: "playerContact" | "buildingContact"; enemyId: number; target: GridPosition }
   | { type: "playerHit"; enemyId: number; damage: number }
+  | { type: "evacuationHit"; enemyId: number; cell: GridPosition; damage: number; enemyWorld: Point }
   | { type: "buildingHit"; enemyId: number; buildingId: string; buildingKind: BuildingKind; cell: GridPosition;
       damage: number; hp: number; destroyed: boolean }
   | { type: "wallImpact"; enemyId: number; wallId: string; damage: number; hp: number; destroyed: boolean }
@@ -123,11 +134,12 @@ export type DefenseEvent =
 
 export interface DefenseEventMetadata {
   readonly waveId?: number;
+  readonly evacuationBatch?: EvacuationBatch;
   readonly enemyKind: EnemyKind;
   readonly timeMs: number;
   readonly cell?: GridPosition;
   readonly towerHit?: {
-    readonly kind: "standard" | TowerEffect["kind"];
+    readonly kind: "standard" | "piercing" | "burst";
     readonly rawDamage: number;
     readonly overkill: number;
     readonly enemyCell: GridPosition;
@@ -144,6 +156,8 @@ type DefenseEmitter = (event: DefenseEvent, metadata: DefenseEventMetadata) => v
 export interface DefenseSimulationOptions {
   readonly towerTuning?: TowerTuning;
   readonly towerDiagnostics?: boolean;
+  readonly towerTargeting?: boolean;
+  readonly towerTargetingDiagnostics?: "trace" | "metrics";
 }
 
 function newCounters() {
@@ -194,7 +208,10 @@ export class DefenseSimulation {
   private readonly expeditionCombat: boolean;
   private readonly towerTuning?: TowerTuning;
   private readonly combatDiagnostics?: TowerCombatDiagnostics;
+  private readonly towerTargeting: boolean;
+  private readonly targetingDiagnostics?: TowerTargetingDiagnostics;
   private readonly waveCombat = new WaveCombatMetrics();
+  private readonly evacuationCombat = new EvacuationCombatLedger();
   private readonly units = new Map<number, EnemyState>();
   private readonly spawnQueue: SpawnRequest[] = [];
   private towerReadyAt = new WeakMap<GridPosition, number>();
@@ -225,6 +242,8 @@ export class DefenseSimulation {
     this.expeditionCombat = expeditionCombat;
     this.towerTuning = options.towerTuning;
     if (options.towerDiagnostics) this.combatDiagnostics = new TowerCombatDiagnostics(map);
+    this.towerTargeting = options.towerTargeting ?? false;
+    if (options.towerTargetingDiagnostics) this.targetingDiagnostics = new TowerTargetingDiagnostics(options.towerTargetingDiagnostics);
     this.navigation = new EnemyNavigation(map);
   }
 
@@ -255,14 +274,25 @@ export class DefenseSimulation {
     }
     this.mergeRouteEnemyId = enemy?.id;
     const subject = enemy ? { id: enemy.id, cell: enemy.move?.to ?? enemy.cell,
-      targetKey: enemy.targetKey, hasTargetedBuilding: enemy.hasTargetedBuilding } : undefined;
+      targetKey: enemy.targetKey, hasTargetedBuilding: enemy.hasTargetedBuilding, evacuationBatch: enemy.evacuationBatch } : undefined;
 
     this.mergeRouteForecaster ??= new MergeRouteForecaster(this.map, this.entry, this.buildingTarget.cell,
       (selection, stance, world) => this.chooseAction(selection, stance, world).target);
     return this.mergeRouteForecaster.preview(released, player, subject, knowledge, force);
   }
   get waveMetrics(): readonly WaveCombatSnapshot[] { return this.waveCombat.snapshots(this.timeMs); }
+  get evacuationBatches(): readonly EvacuationBatchProgress[] { return this.evacuationCombat.snapshots; }
+  get evacuationPeakActive(): number { return this.evacuationCombat.peakActive; }
+  get evacuationRouteBlocked(): boolean {
+    return this.navigation.next(this.entry, this.buildingTarget.cell, true, true).kind === "unreachable";
+  }
+
+  recordEvacuationDamage(batch: EvacuationBatch | undefined, actualDamage: number): void {
+    if (batch !== undefined) this.evacuationCombat.recordDamage(batch, actualDamage);
+  }
   get towerDiagnostics(): readonly TowerCombatSnapshot[] | undefined { return this.combatDiagnostics?.snapshots(this.timeMs); }
+  get towerTargetingMetrics() { return this.targetingDiagnostics?.metrics ?? []; }
+  get towerTargetingTrace() { return this.targetingDiagnostics?.trace ?? []; }
 
   getWaveMetrics(waveId: number): WaveCombatSnapshot | undefined { return this.waveCombat.snapshot(waveId, this.timeMs); }
 
@@ -310,13 +340,24 @@ export class DefenseSimulation {
     return this.enqueue(count, wallDamage, profile, waveId, deployment);
   }
 
+  requestEvacuationBatch(batch: EvacuationBatch, order: WaveOrder, deployment = DEFAULT_DEPLOYMENT): number {
+    const { count, wallDamage, enemyHp: hp, contactDamage } = order;
+    const profile = { hp, contactDamage };
+    if (!validSpawnRequest(count, wallDamage, profile) || !validDeployment(deployment, count, hp)
+      || !this.evacuationCombat.start(batch, count)) return 0;
+    return this.enqueue(count, wallDamage, profile, undefined, deployment, batch);
+  }
+
   private enqueue(count: number, wallDamage: number, profile: EnemyProfile, waveId?: number,
-    { intervalMs, burst, armor }: WaveDeployment = DEFAULT_DEPLOYMENT): number {
+    { intervalMs, burst, armor }: WaveDeployment = DEFAULT_DEPLOYMENT, evacuationBatch?: EvacuationBatch): number {
     this.requestedSpawns += count;
-    this.spawnQueue.push({
-      remaining: count, released: 0, wallDamage, profile: { ...profile }, waveId, enqueuedAtMs: this.timeMs,
+    const request = {
+      remaining: count, released: 0, wallDamage, profile: { ...profile }, waveId, enqueuedAtMs: this.timeMs, evacuationBatch,
       deployment: { intervalMs, burst: burst && { ...burst }, armor: armor && { hp: armor.hp, slots: [...armor.slots] } },
-    });
+    };
+    // Existing ordinary requests remain in order, but the evacuation batch gets the next free release.
+    if (evacuationBatch !== undefined) this.spawnQueue.unshift(request);
+    else this.spawnQueue.push(request);
     this.releaseSpawn();
     return count;
   }
@@ -328,6 +369,7 @@ export class DefenseSimulation {
     this.combatDiagnostics?.clearBattle(this.timeMs);
     this.units.clear();
     this.waveCombat.clearBattle(this.timeMs);
+    this.evacuationCombat.cancelCombat();
   }
 
   reset(): void {
@@ -350,7 +392,9 @@ export class DefenseSimulation {
     this.threatBuildings = [];
     this.exposureTowers = [];
     this.waveCombat.reset();
+    this.evacuationCombat.reset();
     this.combatDiagnostics?.reset();
+    this.targetingDiagnostics?.reset();
   }
 
   step(deltaMs: number, player?: GridPosition | PlayerTarget): void {
@@ -366,16 +410,18 @@ export class DefenseSimulation {
   }
 
   private addEnemy(wallDamage: number, profile: EnemyProfile, waveId?: number, player?: GridPosition,
-    kind: EnemyKind = "normal"): void {
+    kind: EnemyKind = "normal", evacuationBatch?: EvacuationBatch): void {
     const id = this.nextEnemyId++;
     const enemy: EnemyState = {
       id, kind, spawnedAtMs: this.timeMs, cell: this.entry, point: cellCenter(this.entry),
       hp: profile.hp, wallDamage, contactDamage: profile.contactDamage,
       unreachable: false, hasTargetedBuilding: false, contacted: false,
       ...(waveId === undefined ? {} : { waveId }),
+      ...(evacuationBatch === undefined ? {} : { evacuationBatch }),
     };
     this.units.set(id, enemy);
     this.spawned += 1;
+    if (evacuationBatch !== undefined) this.evacuationCombat.spawn(evacuationBatch);
     if (waveId !== undefined) {
       this.waveCombat.spawn(waveId, id, this.timeMs, kind);
       const point = enemyPosition(enemy);
@@ -398,7 +444,8 @@ export class DefenseSimulation {
     const { intervalMs, burst, armor } = request.deployment;
     const armoredHp = armor?.slots.includes(request.released) ? armor.hp : undefined;
     const profile = armoredHp === undefined ? request.profile : { ...request.profile, hp: armoredHp };
-    this.addEnemy(request.wallDamage, profile, request.waveId, player, armoredHp === undefined ? "normal" : "armored");
+    this.addEnemy(request.wallDamage, profile, request.waveId, player,
+      armoredHp === undefined ? "normal" : "armored", request.evacuationBatch);
     request.remaining -= 1;
     request.released += 1;
     if (request.remaining === 0) this.spawnQueue.shift();
@@ -436,6 +483,18 @@ export class DefenseSimulation {
         budget -= duration;
       }
 
+      if (enemy.evacuationBatch !== undefined) {
+        const contact = player && this.playerContact(enemy.point, enemy.point, player);
+        if (contact && player) {
+          this.hitPlayer(enemy, player.cell, contact, this.timeMs - budget);
+          return;
+        }
+        if (this.touchingEvacuation(enemy.point)) {
+          this.hitEvacuation(enemy, this.timeMs - budget);
+          return;
+        }
+      }
+
       const { target, action } = this.chooseAction(enemy, player?.cell);
       const key = pursuitTargetKey(target);
       if (enemy.targetKey !== key) {
@@ -464,23 +523,62 @@ export class DefenseSimulation {
         this.startMove(enemy, action.cell, cellCenter(action.cell));
         continue;
       }
-      if (action.kind === "wall") this.impactWall(enemy, action.cell, action.wallId);
+      if (action.kind === "wall") {
+        if (enemy.evacuationBatch !== undefined && this.approachBuilding(enemy, action.cell)) continue;
+        this.impactWall(enemy, action.cell, action.wallId);
+      }
+      if (action.kind === "arrived" && target.kind === "evacuation") {
+        this.startContactMove(enemy, target.cell, EVACUATION_DEVICE_HALF_SIZE);
+        continue;
+      }
+      if (action.kind === "building") {
+        if (this.approachBuilding(enemy, action.cell)) continue;
+        this.hitBuilding(enemy, action.cell, action.buildingId);
+        return;
+      }
       if (this.expeditionCombat && action.kind === "arrived" && target.buildingId && !enemy.contacted) {
-        const center = cellCenter(target.cell);
-        if (boxDistance(enemy.point, center, TILE_SIZE / 2) > ENEMY_RADIUS) {
-          const reach = TILE_SIZE / 2 + ENEMY_RADIUS;
-          this.startMove(enemy, enemy.cell, {
-            x: center.x + (enemy.cell.col - target.cell.col) * reach,
-            y: center.y + (enemy.cell.row - target.cell.row) * reach,
-          });
-          continue;
-        }
+        if (this.approachBuilding(enemy, target.cell)) continue;
         this.hitBuilding(enemy, target.cell, target.buildingId);
         return;
       }
       if (action.kind === "arrived" && !enemy.contacted) this.contact(enemy, target);
       return;
     }
+  }
+
+  private approachBuilding(enemy: EnemyState, cell: GridPosition): boolean {
+    if (boxDistance(enemy.point, cellCenter(cell), TILE_SIZE / 2) <= ENEMY_RADIUS) return false;
+    this.startContactMove(enemy, cell, TILE_SIZE / 2);
+    return true;
+  }
+
+  private startContactMove(enemy: EnemyState, cell: GridPosition, halfSize: number): void {
+    const center = cellCenter(cell);
+    const reach = halfSize + ENEMY_RADIUS;
+    const end = {
+      x: center.x + (enemy.cell.col - cell.col) * reach,
+      y: center.y + (enemy.cell.row - cell.row) * reach,
+    };
+    this.startMove(enemy, worldToCell(end.x, end.y), end);
+  }
+
+  private touchingEvacuation(point: Point): boolean {
+    const distance = boxDistance(point, cellCenter(this.buildingTarget.cell), EVACUATION_DEVICE_HALF_SIZE);
+    return distance <= ENEMY_RADIUS + 1e-9;
+  }
+
+  private hitEvacuation(enemy: EnemyState, timeMs: number): void {
+    const batch = enemy.evacuationBatch;
+    if (batch === undefined || !this.units.delete(enemy.id)) return;
+    this.combatDiagnostics?.endEnemy(enemy.id, timeMs, "device-contact");
+    this.evacuationCombat.resolve(batch, "deviceContacts");
+    const cell = this.buildingTarget.cell;
+    this.emit({ type: "evacuationHit", enemyId: enemy.id, cell, damage: enemy.contactDamage, enemyWorld: enemy.point },
+      { evacuationBatch: batch, enemyKind: enemy.kind, timeMs, cell });
+  }
+
+  private resolveEvacuationEnemy(enemy: EnemyState, outcome: EvacuationResolution): void {
+    if (enemy.evacuationBatch !== undefined) this.evacuationCombat.resolve(enemy.evacuationBatch, outcome);
   }
 
   private startMove(enemy: EnemyState, to: GridPosition, end: Point): void {
@@ -500,8 +598,10 @@ export class DefenseSimulation {
     this.combatDiagnostics?.endEnemy(enemy.id, timeMs, "player-contact");
     this.counts.playerContacts += 1;
     this.waveCombat.resolve(enemy.id, "playerContacts", timeMs);
+    this.resolveEvacuationEnemy(enemy, "playerContacts");
     this.emit({ type: "playerHit", enemyId: enemy.id, damage: enemy.contactDamage }, {
       waveId: enemy.waveId, enemyKind: enemy.kind, timeMs, cell,
+      ...(enemy.evacuationBatch === undefined ? {} : { evacuationBatch: enemy.evacuationBatch }),
       contact: { ...contact, enemyCell: enemy.cell, navigationTarget: enemy.targetKey, source: "enemy-body-contact" },
     });
   }
@@ -535,14 +635,21 @@ export class DefenseSimulation {
   }
 
   private emitFor(enemy: EnemyState, event: DefenseEvent, cell?: GridPosition): void {
-    this.emit(event, { waveId: enemy.waveId, enemyKind: enemy.kind, timeMs: this.timeMs, cell });
+    this.emit(event, {
+      waveId: enemy.waveId, enemyKind: enemy.kind, timeMs: this.timeMs, cell,
+      ...(enemy.evacuationBatch === undefined ? {} : { evacuationBatch: enemy.evacuationBatch }),
+    });
   }
 
-  private chooseAction(enemy: Pick<EnemyState, "cell" | "hasTargetedBuilding">, player?: GridPosition,
+  private chooseAction(enemy: Pick<EnemyState, "cell" | "hasTargetedBuilding" | "evacuationBatch">, player?: GridPosition,
     world?: MergeRouteWorld): { target: Target; action: NavigationAction } {
     const from = enemy.cell;
     const map = world?.map ?? this.map;
     const navigation = world?.navigation ?? this.navigation;
+    if (enemy.evacuationBatch !== undefined) {
+      const target: Target = { kind: "evacuation", cell: this.buildingTarget.cell };
+      return { target, action: this.actionToward(navigation, from, target.cell, true, true) };
+    }
     if (this.expeditionCombat) {
       let playerAction: NavigationAction | undefined;
       if (player && this.hasPlayerSight(from, player, map)) {
@@ -577,8 +684,9 @@ export class DefenseSimulation {
     return this.attackableBuildings;
   }
 
-  private actionToward(navigation: EnemyNavigation, from: GridPosition, target: GridPosition, allowBreach = true): NavigationAction {
-    return sameCell(from, target) ? { kind: "arrived" } : navigation.next(from, target, allowBreach);
+  private actionToward(navigation: EnemyNavigation, from: GridPosition, target: GridPosition, allowBreach = true,
+    allowStructureBreach = false): NavigationAction {
+    return sameCell(from, target) ? { kind: "arrived" } : navigation.next(from, target, allowBreach, allowStructureBreach);
   }
 
   private seesPlayer(from: GridPosition, player: GridPosition, map: NavigationMap): boolean {
@@ -649,13 +757,16 @@ export class DefenseSimulation {
     this.counts.wallImpacts += 1;
     if (impact.destroyed) this.counts.wallsDestroyed += 1;
     this.waveCombat.resolve(enemy.id, "wallImpacts", this.timeMs, impact.damage, impact.destroyed);
+    this.resolveEvacuationEnemy(enemy, "wallImpacts");
     this.emitFor(enemy, { type: "wallImpact", enemyId: enemy.id, wallId, damage: impact.damage,
       hp: impact.hp, destroyed: impact.destroyed }, cell);
   }
 
   private fireTower(tower: Building): void {
-    if (this.combatDiagnostics) this.observeTower(tower, this.combatDiagnostics);
-    if (!this.units.size || (this.towerReadyAt.get(tower.cell) ?? 0) > this.timeMs) return;
+    const readyAt = this.towerReadyAt.get(tower.cell) ?? 0;
+    if (this.combatDiagnostics || this.targetingDiagnostics?.detailed) this.observeTower(tower, readyAt);
+    if (!this.units.size || readyAt > this.timeMs) return;
+    this.targetingDiagnostics?.search(tower, this.units.size);
     const biome = this.map.getBiome(tower.cell);
     if (tower.evolution) {
       const attributes = evolvedTowerAttributes(tower.evolution, biome, this.towerTuning);
@@ -665,8 +776,10 @@ export class DefenseSimulation {
     }
     const attributes = towerAttributes(this.map.buildingBalance, tower.level, biome);
     let selected: EnemyState | undefined;
-    let closest = attributes.range ** 2;
+    let closest = towerSearchRadius(attributes.range, this.towerTargeting) ** 2
+      + (this.towerTargeting ? TARGET_DISTANCE_EPSILON : 0);
     for (const enemy of this.units.values()) {
+      if (enemy.hp <= 0) continue;
       const position = enemyPosition(enemy);
       const distance = (position.x - tower.cell.col - 0.5) ** 2 + (position.y - tower.cell.row - 0.5) ** 2;
       if (distance > closest || (selected && distance === closest)) continue;
@@ -677,20 +790,25 @@ export class DefenseSimulation {
 
     this.towerReadyAt.set(tower.cell, this.timeMs + attributes.intervalMs);
     this.combatDiagnostics?.startShot(tower, this.timeMs);
+    this.targetingDiagnostics?.fire(tower, "standard", [selected.id]);
     this.hitTowerEnemy(tower, selected, enemyPosition(selected), attributes.damage, "standard");
   }
 
-  private observeTower(tower: Building, diagnostics: TowerCombatDiagnostics): void {
+  private observeTower(tower: Building, readyAt: number): void {
     const biome = this.map.getBiome(tower.cell);
-    const readyAt = this.towerReadyAt.get(tower.cell) ?? 0;
+    const origin = { x: tower.cell.col + 0.5, y: tower.cell.row + 0.5 };
     if (tower.evolution) {
       const attributes = evolvedTowerAttributes(tower.evolution, biome, this.towerTuning);
       const coverage = attributes.kind === "piercing" ? this.piercingCoverage(tower.cell, attributes)
-        : buildEvolvedTowerCoverage(this.map, tower.cell, attributes);
-      diagnostics.observe(tower, { ...attributes, coverage }, this.units.values(), enemyPosition, this.timeMs, readyAt);
+        : buildEvolvedTowerCoverage(this.map, tower.cell, attributes, this.towerTargeting);
+      this.combatDiagnostics?.observe(tower, { ...attributes, coverage }, this.units.values(), enemyPosition, this.timeMs, readyAt);
+      this.targetingDiagnostics?.sample(this.map, tower, { range: attributes.range, origin, coverage, bodyAware: this.towerTargeting },
+        this.units.values(), enemyPosition, this.timeMs, readyAt);
     } else {
       const attributes = towerAttributes(this.map.buildingBalance, tower.level, biome);
-      diagnostics.observe(tower, attributes, this.units.values(), enemyPosition, this.timeMs, readyAt);
+      this.combatDiagnostics?.observe(tower, attributes, this.units.values(), enemyPosition, this.timeMs, readyAt);
+      this.targetingDiagnostics?.sample(this.map, tower, { range: attributes.range, origin, bodyAware: this.towerTargeting },
+        this.units.values(), enemyPosition, this.timeMs, readyAt);
     }
   }
 
@@ -701,7 +819,7 @@ export class DefenseSimulation {
     }
     let coverage = this.towerCoverage.get(cell);
     if (!coverage) {
-      coverage = buildEvolvedTowerCoverage(this.map, cell, attributes);
+      coverage = buildEvolvedTowerCoverage(this.map, cell, attributes, this.towerTargeting);
       this.towerCoverage.set(cell, coverage);
     }
     return coverage;
@@ -712,10 +830,21 @@ export class DefenseSimulation {
     const { origin, axis } = coverage;
     const negative: PiercingHit[] = [];
     const positive: PiercingHit[] = [];
+    let fallback: TowerStrike | undefined;
+    let closestFallback = towerSearchRadius(PIERCING_FALLBACK.range, true) ** 2 + TARGET_DISTANCE_EPSILON;
     for (const enemy of this.units.values()) {
+      if (enemy.hp <= 0) continue;
       const position = enemyPosition(enemy);
       const distance = evolvedTargetDistanceSquared(this.map, coverage, position);
-      if (distance === undefined) continue;
+      if (distance === undefined) {
+        if (!this.towerTargeting || negative.length || positive.length) continue;
+        const squared = (position.x - origin.x) ** 2 + (position.y - origin.y) ** 2;
+        if (squared > closestFallback || (fallback && squared === closestFallback)
+          || !hasTowerLineOfSight(this.map, origin, position)) continue;
+        fallback = { enemy, position, rawDamage: PIERCING_FALLBACK.damage };
+        closestFallback = squared;
+        continue;
+      }
       const forward = axis === "horizontal" ? position.x - origin.x : position.y - origin.y;
       const side = forward < 0 ? negative : positive;
       const insertAt = side.findIndex((hit) => hit.distance > distance);
@@ -731,18 +860,25 @@ export class DefenseSimulation {
     const firesNegative = nearestNegative && (!nearestPositive || nearestNegative.distance < nearestPositive.distance
       || (nearestNegative.distance === nearestPositive.distance && nearestNegative.enemy.id < nearestPositive.enemy.id));
     const hits = firesNegative ? negative : positive;
-    if (!hits.length) return;
+    if (!hits.length) {
+      if (fallback) this.resolveEvolvedAttack(tower, attributes.intervalMs, [fallback],
+        { kind: "piercingFallback", from: origin, to: fallback.position });
+      return;
+    }
 
     const distance = firesNegative ? -coverage.negativeReach : coverage.positiveReach;
     const to = axis === "horizontal" ? { x: origin.x + distance, y: origin.y } : { x: origin.x, y: origin.y + distance };
-    this.resolveEvolvedAttack(tower, attributes.intervalMs, hits, { kind: "piercing", from: origin, to });
+    this.resolveEvolvedAttack(tower, attributes.intervalMs, hits, {
+      kind: "piercing", from: origin, to, ...(coverage.halfWidth === undefined ? {} : { halfWidth: coverage.halfWidth }),
+    });
   }
 
   private fireBurstTower(tower: Building, attributes: BurstTowerAttributes): void {
-    const coverage = buildEvolvedTowerCoverage(this.map, tower.cell, attributes);
-    let closest = coverage.rangeSquared;
+    const coverage = buildEvolvedTowerCoverage(this.map, tower.cell, attributes, this.towerTargeting);
+    let closest = coverage.rangeSquared + (this.towerTargeting ? TARGET_DISTANCE_EPSILON : 0);
     let primary: TowerStrike | undefined;
     for (const enemy of this.units.values()) {
+      if (enemy.hp <= 0) continue;
       const position = enemyPosition(enemy);
       const distance = evolvedTargetDistanceSquared(this.map, coverage, position, closest);
       if (distance === undefined || (primary && distance === closest)) continue;
@@ -754,8 +890,9 @@ export class DefenseSimulation {
     const center = primary.position;
     const radiusSquared = attributes.radius ** 2;
     const hits = [primary];
+    this.targetingDiagnostics?.search(tower, this.units.size, "splash");
     for (const enemy of this.units.values()) {
-      if (enemy === primary.enemy) continue;
+      if (enemy === primary.enemy || enemy.hp <= 0) continue;
       const position = enemyPosition(enemy);
       const distance = (position.x - center.x) ** 2 + (position.y - center.y) ** 2;
       // Interpolated positions can round a mathematically exact radius slightly outward.
@@ -773,30 +910,38 @@ export class DefenseSimulation {
   private resolveEvolvedAttack(tower: Building, intervalMs: number, hits: readonly TowerStrike[], effect: TowerEffect): void {
     this.towerReadyAt.set(tower.cell, this.timeMs + intervalMs);
     this.combatDiagnostics?.startShot(tower, this.timeMs);
+    this.targetingDiagnostics?.fire(tower, effect.kind, hits.map(({ enemy }) => enemy.id));
     const enemyIds: number[] = [];
+    const kind = effect.kind === "piercingFallback" ? "piercing" : effect.kind;
     for (const { enemy, position, rawDamage } of hits) {
       const role = enemy === hits[0].enemy ? "primary" : "additional";
-      if (this.hitTowerEnemy(tower, enemy, position, rawDamage, effect.kind, role)) enemyIds.push(enemy.id);
+      if (this.hitTowerEnemy(tower, enemy, position, rawDamage, kind, role)) enemyIds.push(enemy.id);
     }
     if (enemyIds.length) this.emitFor(hits[0].enemy, { type: "towerEffect", towerId: tower.id, enemyIds, effect }, tower.cell);
   }
 
   private hitTowerEnemy(tower: Building, enemy: EnemyState, to: Position, rawDamage: number,
     kind: NonNullable<DefenseEventMetadata["towerHit"]>["kind"], role: TowerHitRole = "primary"): boolean {
-    if (this.units.get(enemy.id) !== enemy || enemy.hp === 0) return false;
+    if (this.units.get(enemy.id) !== enemy || enemy.hp <= 0) {
+      this.targetingDiagnostics?.hit(tower, enemy.id, false);
+      return false;
+    }
     const damage = Math.min(enemy.hp, rawDamage);
     enemy.hp -= damage;
+    this.targetingDiagnostics?.hit(tower, enemy.id, true);
     this.combatDiagnostics?.recordHit(tower, enemy, role, to, damage, rawDamage - damage);
     this.counts.shots += 1;
     this.waveCombat.recordTowerHit(enemy.id, this.timeMs);
     this.emit({ type: "towerShot", enemyId: enemy.id, towerId: tower.id, from: tower.cell, to, damage }, {
       waveId: enemy.waveId, enemyKind: enemy.kind, timeMs: this.timeMs, cell: tower.cell,
+      ...(enemy.evacuationBatch === undefined ? {} : { evacuationBatch: enemy.evacuationBatch }),
       towerHit: { kind, rawDamage, overkill: rawDamage - damage, enemyCell: { col: Math.floor(to.x), row: Math.floor(to.y) } },
     });
     if (enemy.hp === 0 && this.units.delete(enemy.id)) {
       this.combatDiagnostics?.recordKill(tower, enemy, this.timeMs);
       this.counts.towerKills += 1;
       this.waveCombat.resolve(enemy.id, "towerKills", this.timeMs);
+      this.resolveEvacuationEnemy(enemy, "towerKills");
       this.emitFor(enemy, { type: "towerKill", enemyId: enemy.id, towerId: tower.id }, tower.cell);
     }
     return true;

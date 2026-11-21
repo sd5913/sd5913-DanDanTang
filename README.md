@@ -21,13 +21,14 @@ Open the address printed by Vite to start the current Playtest Build. Add `?seed
 | Hold left mouse button | Dig an adjacent tile. After clearing it, keep holding and use WASD to continue in that direction. |
 | Select a building card, then click the map | Place on a visible, empty tile in the eight surrounding cells. Hold Shift to keep placing the same card while it is in stock. Press Esc to cancel. |
 | Click a ready building, then choose **合成** (Merge) | Inspect the result and merge when you are next to any of the four participating buildings. |
+| E or **启动撤离装置** | Activate the evacuation device from its tile or an orthogonally adjacent tile. |
 | R or **重试当前种子** | Restart with the current world seed. |
 | **新开一局** | Start with a different world seed. |
 | G | Toggle the grid. |
 
 ## Current Playtest Build
 
-I chose Challenge, W25, and Combined for one provisional playtest build. Opening the game starts this configuration with standard timing and fog of war. The map includes seeded regions, terrain tiers, construction and building synthesis, card crafting, tool research, and enemy waves. Research the level-two tool and reach the northern goal to win.
+I chose Challenge, W25, and Combined for one provisional playtest build. Opening the game starts this configuration with standard timing and fog of war. The map includes seeded regions, terrain tiers, construction and building synthesis, card crafting, tool research, and enemy waves. Research the level-two tool and dig to the northern goal. Activate the evacuation device, then keep yourself and its 6 HP alive until both final batches have spawned and cleared. The 12 and 20 enemies enter from the south and use the passages you excavated. Starting the evacuation stops new ordinary waves while enemies already in play continue acting.
 
 You start with a level-one tool and no currency, cards, or structures. Each point of actual terrain damage earns 0.1 currency. Select **建造科技设施** and place it on a legal neighboring tile for 10 currency. Level-two tool research costs 20. At least one of the first three paid crafts yields a wall or tower. The first wave brings eight enemies after 60 seconds. Rebuilding a lost facility preserves research completed during the run.
 
@@ -39,10 +40,10 @@ I chose to let the shape of four connected towers determine what they become. A 
 
 | Candidate tower | Attack | Interval | Base range |
 | --- | --- | ---: | ---: |
-| Piercing Tower Lv.2 | Deals 5 damage each to up to four enemies along one side of its fixed axis. | 750 ms | 7 tiles |
+| Piercing Tower Lv.2 | Deals 5 damage each to up to four enemies whose bodies touch the beam along one side of its fixed axis. With no valid beam target, it can deal 2 damage to one nearby enemy. Both modes share the same cooldown. | 750 ms | 7 tiles on the axis, 3 for fallback |
 | Burst Tower Lv.2 | Deals 4 damage to its target and 2 to nearby enemies within 2 tiles of the impact. | 650 ms | 4 tiles |
 
-Rock, undug terrain, water, and buildings can block these attacks. Highland adds 2 tiles to range. Both towers have 1 HP. The faster piercing shot helps on straight lanes, and the larger blast reaches more enemies in a queue. Keep room for follow-up construction. Freed tiles can fit more cards and can also open a shortcut for enemies. These values are provisional for playtesting.
+Rock, undug terrain, water, and buildings can block Piercing and Burst attacks. Hover over a tower to see its acquisition area. For Piercing, the blue lines show the unobstructed beam and the amber ring shows the fallback radius. Fallback still requires a clear line to the enemy. Highland adds 2 tiles to the main range of either evolved tower. Both have 1 HP. Each final batch uses the current Combined enemy rules and has its own diminishing kill reward count. These values are provisional for playtesting.
 
 The midgame rules target 200, 150, then 100 ms between releases as waves advance, subject to space at the southern entrance. After the second depth stage is reached, 25% of planned slots are gold, ringed 14 HP enemies, rounded to the nearest enemy. Card crafts 1–3 cost 3, crafts 4–8 cost 6, and later crafts cost 9. Each spawn wave awards 2 for its first eight tower kills and 1 for each subsequent kill from that wave.
 
@@ -59,9 +60,9 @@ npm run test:browser
 npm run preview
 ```
 
-The build writes the player distribution to `dist/`. Use `--playtest` to test this production output in a locally installed Edge. The historical browser suite builds its own temporary diagnostic artifact. Use `--normal-round` for standard-timing regression, or `--challenge`, `--building-balance`, `--contacts`, and `--midgame` for targeted suites. The tower evolution suite is available with `--tower-evolution`. The standalone test scripts `tests/browser-stress.mjs` and `tests/browser-midgame-perf.mjs` measure short load and sustained defense. Run `node tests/tower-specialization.mjs` for the matched radius and cooldown experiments and `node tests/tower-space-comparison.mjs` for the equal-cost construction comparison. Run `node tests/merge-timing.mjs` to compare automatic, early, and delayed merges. Use `node tests/browser-merge-performance.mjs --record` to measure selection and route previews under load in Edge. The tower combat load test remains available through `node tests/browser-tower-evolution-perf.mjs`.
+The build writes the player distribution to `dist/`. Use `--playtest` to test this production output in a locally installed Edge. The historical browser suite builds its own temporary diagnostic artifact. Use `--normal-round` for standard-timing regression, or `--challenge`, `--building-balance`, `--contacts`, and `--midgame` for targeted suites. The tower evolution suite is available with `--tower-evolution`. The standalone test scripts `tests/browser-stress.mjs` and `tests/browser-midgame-perf.mjs` measure short load and sustained defense. Run `node tests/tower-specialization.mjs` for the matched radius and cooldown experiments and `node tests/tower-space-comparison.mjs` for the equal-cost construction comparison. Run `node tests/merge-timing.mjs` to compare automatic, early, and delayed merges. Use `node tests/browser-merge-performance.mjs --record` to measure selection and route previews under load in Edge. The historical tower load test remains available through `node tests/browser-tower-evolution-perf.mjs`. Run `node tests/browser-tower-targeting.mjs --record` for the targeting comparison and fogged performance in Edge. Run `node tests/endgame-replay.mjs` for the paid strategy matrix. Pass `--random-seed=<seed>` to repeat its fifth seed.
 
-For development diagnostics, start the dev server and use `?diagnostics=1&mode=play`. This opens the historical difficulty, building, and midgame selectors. Add `&debug=1` to access tools such as **玩家受击记录**. In this diagnostic environment, `&evolution=1` enables shape-based towers with the original combat values. Add `&merge=manual` to test the current interaction in the diagnostic build. Historical immediate merges and the historical level-two tower remain available to regression tests. The player distribution accepts a world seed and uses its fixed playtest rules for every round.
+For development diagnostics, start the dev server and use `?diagnostics=1&mode=play`. This opens the historical difficulty, building, and midgame selectors. Add `&debug=1` to access tools such as **玩家受击记录**. In this diagnostic environment, `&evolution=1` enables shape-based towers with the original combat values. Add `&merge=manual` to test the current interaction in the diagnostic build. Add `&evacuation=1&targeting=1` to enable the current endgame and targeting rules in a diagnostic run. Historical immediate merges, arrival wins, and tower targeting remain available to regression tests. The player distribution accepts a world seed and uses its fixed playtest rules for every round.
 
 ## Project records
 

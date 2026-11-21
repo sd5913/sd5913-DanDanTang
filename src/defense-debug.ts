@@ -6,20 +6,22 @@ import type { PlacementFailure, PlacementPreview } from "./build-placement.ts";
 import { DefenseSimulation, enemyWorldPosition, sameCell } from "./defense-simulation.ts";
 import type { DefenseEvent, DefenseEventMetadata, EnemyKind, TowerEffect } from "./defense-simulation.ts";
 import { ENEMY_RADIUS } from "./enemy-contact.ts";
+import { EvacuationHud } from "./evacuation-hud.ts";
 import type { Building, BuildingKind, BuildingSynthesisPreview, TowerEvolution } from "./buildings.ts";
 import { BUILDING_NAMES, evolutionDirection, evolutionName, ExpeditionControls } from "./expedition-controls.ts";
 import type { CardKind } from "./expedition-economy.ts";
 import type { DifficultyId } from "./expedition-difficulty.ts";
 import { ExpeditionRound } from "./expedition-round.ts";
-import type { RoundSpeed } from "./expedition-round.ts";
+import type { RoundSpeed, WaveOrder } from "./expedition-round.ts";
 import type { BiomeId } from "./expedition-biomes.ts";
 import { MergeControls } from "./merge-controls.ts";
 import type { MergeRouteKnowledge } from "./merge-route-preview.ts";
-import { MIDGAME_EXPERIMENTS, waveDeployment } from "./midgame-experiments.ts";
+import { evacuationDeployment, MIDGAME_EXPERIMENTS, waveDeployment } from "./midgame-experiments.ts";
 import type { MidgameExperimentId } from "./midgame-experiments.ts";
 import { cellCenter, TILE_SIZE, worldToCell } from "./player.ts";
 import type { Player, Point } from "./player.ts";
 import type { GridPosition, TerrainMap } from "./terrain.ts";
+import { buildEvolvedTowerCoverage, PIERCING_FALLBACK } from "./tower-attack.ts";
 import { WaveEconomyHistory } from "./wave-economy-history.ts";
 
 const SHOT_VISIBLE_MS = 140;
@@ -74,6 +76,9 @@ export interface DefenseScenario {
   readonly towerEvolution?: boolean;
   readonly manualMerge?: boolean;
   readonly towerTuning?: TowerTuning;
+  readonly evacuation?: boolean;
+  readonly towerTargeting?: boolean;
+  readonly towerTargetingDiagnostics?: "trace" | "metrics";
 }
 
 export class DefenseDebug {
@@ -101,11 +106,12 @@ export class DefenseDebug {
   private readonly merge?: MergeControls;
   private mergeRelease?: { readonly cells: readonly GridPosition[]; readonly untilMs: number };
   private readonly round?: ExpeditionRound;
+  private readonly evacuationHud?: EvacuationHud;
   private readonly economyHistory?: WaveEconomyHistory;
   private shots: { readonly event: Shot; readonly expires: number }[] = [];
   private hitMarkers: { readonly world: Point; readonly kind: EnemyKind; readonly expires: number }[] = [];
   private readonly towerEffectTrace: TowerEffectTrace[] = [];
-  private readonly evolvedShots = { piercing: 0, burst: 0 };
+  private readonly evolvedShots = { piercing: 0, burst: 0, piercingFallback: 0 };
   private readonly pendingContacts: HitTrace[] = [];
   private readonly contactRecords: unknown[] = [];
   private timeMs = 0;
@@ -122,12 +128,13 @@ export class DefenseDebug {
     this.isVisible = knowledge.isVisible;
     this.simulation = new DefenseSimulation(
       map, scenario.entry, scenario.target, (event, metadata) => this.onEvent(event, metadata), scenario.worldSeed !== undefined,
-      { towerTuning: scenario.towerTuning },
+      { towerTuning: scenario.towerTuning, towerTargeting: scenario.towerTargeting,
+        towerTargetingDiagnostics: scenario.towerTargetingDiagnostics },
     );
     this.graphics = scene.add.graphics().setDepth(1.5);
     this.labelLayer = scene.add.layer().setDepth(2.5);
     if (scenario.worldSeed !== undefined) {
-      this.round = new ExpeditionRound(scenario.roundSpeed, scenario.difficulty);
+      this.round = new ExpeditionRound(scenario.roundSpeed, scenario.difficulty, scenario.evacuation);
       this.expedition = new ExpeditionControls(scene, map, scenario.worldSeed, this.round, {
         debug: scenario.debugControls === true,
         manualMerge: scenario.manualMerge,
@@ -151,6 +158,10 @@ export class DefenseDebug {
           feedback: (message) => this.expedition?.showFeedback(message),
           merged: (building, released) => this.onManualMerge(building, released),
         }, scene);
+      }
+      if (scenario.evacuation) {
+        this.evacuationHud = new EvacuationHud(scene, () => this.activateEvacuation());
+        this.showEvacuation();
       }
       this.economyHistory = new WaveEconomyHistory(this.expedition.economy.totals);
       this.publishWaveMetrics(true);
@@ -196,6 +207,12 @@ export class DefenseDebug {
       }
       this.expedition.economy.advance(elapsed);
       this.simulation.step(elapsed, this.player);
+      if (this.round.phase === "evacuating") {
+        const batch = this.round.updateEvacuation(elapsed, this.simulation.evacuationBatches);
+        if (batch) this.queueEvacuation(batch.batch, batch.order);
+        if (this.roundEnded) this.stopCombat(false);
+      }
+      this.showEvacuation();
       this.expedition.showRound(this.round);
       this.expedition.refresh();
       this.publishWaveMetrics(phase !== this.round.phase);
@@ -207,6 +224,14 @@ export class DefenseDebug {
   render(view: Phaser.Geom.Rectangle, cell: GridPosition | null): PlacementPreview | undefined {
     const { isVisible } = this;
     const graphics = this.graphics.clear();
+    if (this.evacuationHud && isVisible(this.scenario.target)) {
+      const { x, y } = cellCenter(this.scenario.target);
+      if (view.contains(x, y)) {
+        const color = this.round?.lossReason === "evacuation" ? 0xf0a18c
+          : this.round?.evacuation ? 0xffcf90 : 0x8ce9ff;
+        graphics.lineStyle(2, color).strokeCircle(x, y, 10).strokeRect(x - 5, y - 5, 10, 10);
+      }
+    }
     let labelCount = 0;
     for (const building of this.map.getBuildings()) {
       if (!isVisible(building.cell)) continue;
@@ -274,6 +299,7 @@ export class DefenseDebug {
     const placement = this.expedition?.previewPlacement(cell);
     const synthesis = this.merge?.render(cell, this.expedition?.placing === true) ?? this.expedition?.synthesisPreview;
     if (synthesis) this.drawSynthesisPreview(synthesis);
+    else if (this.scenario.towerTargeting && !placement && building?.kind === "tower") this.drawTowerRange(building, view);
     this.drawReleasedTiles();
     return placement;
   }
@@ -335,25 +361,13 @@ export class DefenseDebug {
     const { from } = effect;
     if (!this.isVisible({ col: Math.floor(from.x), row: Math.floor(from.y) })) return;
     if (effect.kind === "piercing") {
+      this.drawPiercingLine(from, effect.to, view, effect.halfWidth === undefined ? 3 : effect.halfWidth * TILE_SIZE * 2, 1);
+      return;
+    }
+    if (effect.kind === "piercingFallback") {
       const { to } = effect;
-      const horizontal = from.y === to.y;
-      const origin = horizontal ? from.x : from.y;
-      const end = horizontal ? to.x : to.y;
-      const direction = Math.sign(end - origin);
-      let visibleEnd = origin;
-      while ((end - visibleEnd) * direction > 0) {
-        const tile = direction > 0 ? Math.floor(visibleEnd) : Math.ceil(visibleEnd) - 1;
-        const along = horizontal ? { col: tile, row: Math.floor(from.y) } : { col: Math.floor(from.x), row: tile };
-        if (!this.isVisible(along)) break;
-        visibleEnd = direction > 0 ? Math.min(end, tile + 1) : Math.max(end, tile);
-      }
-      const x = from.x * TILE_SIZE;
-      const y = from.y * TILE_SIZE;
-      const endX = (horizontal ? visibleEnd : from.x) * TILE_SIZE;
-      const endY = (horizontal ? from.y : visibleEnd) * TILE_SIZE;
-      if (Math.max(x, endX) < view.left || Math.min(x, endX) > view.right
-        || Math.max(y, endY) < view.top || Math.min(y, endY) > view.bottom) return;
-      this.graphics.lineStyle(3, 0xa4faff).lineBetween(x, y, endX, endY);
+      if (!this.isVisible({ col: Math.floor(to.x), row: Math.floor(to.y) })) return;
+      this.graphics.lineStyle(2, 0xffc88b).lineBetween(from.x * TILE_SIZE, from.y * TILE_SIZE, to.x * TILE_SIZE, to.y * TILE_SIZE);
       return;
     }
 
@@ -363,13 +377,36 @@ export class DefenseDebug {
     const r = radius * TILE_SIZE;
     if (x + r < view.left || x - r > view.right || y + r < view.top || y - r > view.bottom
       || !this.isVisible({ col: Math.floor(center.x), row: Math.floor(center.y) })) return;
+    this.drawRangeCircle(x, y, r, 0xf9bd7a, 1);
+  }
 
-    // Draw only ring segments whose bounding tiles are currently visible.
-    this.graphics.lineStyle(2.5, 0xf9bd7a);
+  private drawPiercingLine(from: Point, to: Point, view: Phaser.Geom.Rectangle, width: number, alpha: number): void {
+    const horizontal = from.y === to.y;
+    const origin = horizontal ? from.x : from.y;
+    const end = horizontal ? to.x : to.y;
+    const direction = Math.sign(end - origin);
+    let visibleEnd = origin;
+    while ((end - visibleEnd) * direction > 0) {
+      const tile = direction > 0 ? Math.floor(visibleEnd) : Math.ceil(visibleEnd) - 1;
+      const along = horizontal ? { col: tile, row: Math.floor(from.y) } : { col: Math.floor(from.x), row: tile };
+      if (!this.isVisible(along)) break;
+      visibleEnd = direction > 0 ? Math.min(end, tile + 1) : Math.max(end, tile);
+    }
+    const x = from.x * TILE_SIZE;
+    const y = from.y * TILE_SIZE;
+    const endX = (horizontal ? visibleEnd : from.x) * TILE_SIZE;
+    const endY = (horizontal ? from.y : visibleEnd) * TILE_SIZE;
+    if (Math.max(x, endX) < view.left || Math.min(x, endX) > view.right
+      || Math.max(y, endY) < view.top || Math.min(y, endY) > view.bottom) return;
+    this.graphics.lineStyle(width, 0xa4faff, alpha).lineBetween(x, y, endX, endY);
+  }
+
+  private drawRangeCircle(x: number, y: number, r: number, color: number, alpha: number): void {
+    this.graphics.lineStyle(2, color, alpha);
     let previousX = x + r;
     let previousY = y;
-    for (let segment = 1; segment <= 16; segment += 1) {
-      const angle = segment * Math.PI / 8;
+    for (let segment = 1; segment <= 32; segment += 1) {
+      const angle = segment * Math.PI / 16;
       const nextX = x + r * Math.cos(angle);
       const nextY = y + r * Math.sin(angle);
       let visible = true;
@@ -383,6 +420,26 @@ export class DefenseDebug {
       previousY = nextY;
     }
   }
+
+  private drawTowerRange(tower: Building, view: Phaser.Geom.Rectangle): void {
+    const { x, y } = cellCenter(tower.cell);
+    const biome = this.map.getBiome(tower.cell);
+    const evolution = tower.evolution;
+    if (evolution?.kind === "piercing") {
+      const attributes = evolvedTowerAttributes(evolution, biome, this.scenario.towerTuning);
+      const { origin, axis, negativeReach, positiveReach } = buildEvolvedTowerCoverage(this.map, tower.cell, attributes, true);
+      const onAxis = (distance: number): Point => axis === "horizontal" ? { x: origin.x + distance, y: origin.y }
+        : { x: origin.x, y: origin.y + distance };
+      this.drawPiercingLine(origin, onAxis(-negativeReach), view, 2, 0.65);
+      this.drawPiercingLine(origin, onAxis(positiveReach), view, 2, 0.65);
+      this.drawRangeCircle(x, y, PIERCING_FALLBACK.range * TILE_SIZE, 0xffc88b, 0.65);
+      return;
+    }
+    const { range } = evolution ? evolvedTowerAttributes(evolution, biome, this.scenario.towerTuning)
+      : towerAttributes(this.map.buildingBalance, tower.level, biome);
+    this.drawRangeCircle(x, y, range * TILE_SIZE, 0x8ce9ff, 0.6);
+  }
+
 
   private showBuildingStats(building?: Building): void {
     this.buildingStats.hidden = !building;
@@ -403,7 +460,9 @@ export class DefenseDebug {
         : `${attack.range} 格`;
       const damage = attack.kind === "piercing" ? `伤害 ${attack.damage} · 最多 ${attack.maxTargets} 个目标`
         : `主伤害 ${attack.damage} · 溅射 ${attack.splashDamage} · 半径 ${attack.radius} 格`;
-      return `${evolutionDirection(evolution)} · ${damage} · 射程 ${range} · 间隔 ${attack.intervalMs} ms`;
+      const fallback = this.scenario.towerTargeting && attack.kind === "piercing"
+        ? ` · 备用 ${PIERCING_FALLBACK.range} 格 / ${PIERCING_FALLBACK.damage} 点（与主攻共用冷却）` : "";
+      return `${evolutionDirection(evolution)} · ${damage} · 射程 ${range} · 间隔 ${attack.intervalMs} ms${fallback}`;
     } else if (kind === "tower") {
       const { damage, range, intervalMs } = towerAttributes(buildingBalance, level, biome);
       return `${prefix} · 伤害 ${damage} · 射程 ${range} 格 · 间隔 ${intervalMs} ms`;
@@ -427,12 +486,14 @@ export class DefenseDebug {
     this.towerEffectTrace.length = 0;
     this.evolvedShots.piercing = 0;
     this.evolvedShots.burst = 0;
+    this.evolvedShots.piercingFallback = 0;
     delete this.stats.dataset.towerEffects;
     this.pendingContacts.length = 0;
     this.contactRecords.length = 0;
     this.contactTrace.value = "";
     if (this.round && this.expedition) {
       this.round.reset();
+      this.showEvacuation();
       this.expedition.showRound(this.round);
       this.expedition.reset();
       this.economyHistory?.reset(this.expedition.economy.totals);
@@ -447,6 +508,37 @@ export class DefenseDebug {
   }
 
   get roundEnded(): boolean { return this.round?.phase === "won" || this.round?.phase === "lost"; }
+
+  private canActivateEvacuation(): boolean {
+    if (!this.evacuationHud || this.roundEnded || this.round?.evacuation || this.toolLevel < 2) return false;
+    const { col, row } = this.player.cell;
+    return Math.abs(col - this.scenario.target.col) + Math.abs(row - this.scenario.target.row) <= 1;
+  }
+
+  activateEvacuation(): boolean {
+    if (!this.canActivateEvacuation()) return false;
+    const batch = this.round?.activateEvacuation(this.toolLevel, this.player.cell.row);
+    if (!batch) return false;
+    this.queueEvacuation(batch.batch, batch.order);
+    this.showEvacuation();
+    if (this.round) this.expedition?.showRound(this.round);
+    return true;
+  }
+
+  private queueEvacuation(batch: 1 | 2, order: WaveOrder): void {
+    if (!this.round || this.scenario.worldSeed === undefined) return;
+    // Final cohorts use the active deployment rules at the mature-wave cadence.
+    const deployment = evacuationDeployment(this.midgame, batch, {
+      seed: this.scenario.worldSeed, stage: this.round.stage, count: order.count,
+    });
+    this.simulation.requestEvacuationBatch(batch, order, deployment);
+  }
+
+  private showEvacuation(): void {
+    if (!this.evacuationHud || !this.round) return;
+    this.evacuationHud.update(this.round, this.simulation.evacuationBatches, this.canActivateEvacuation(),
+      this.round.phase === "evacuating" && this.simulation.evacuationRouteBlocked, this.simulation.evacuationPeakActive);
+  }
 
   reachGoal(): boolean {
     if (!this.round) return true;
@@ -480,15 +572,16 @@ export class DefenseDebug {
     if (count === 50 || count === 100 || count === 250) this.simulation.spawn(count, 1);
   }
 
-  private stopCombat(): void {
+  private stopCombat(clearBattle = true): void {
     this.merge?.clearSelection();
     this.mergeRelease = undefined;
-    this.simulation.clearBattle();
+    if (clearBattle) this.simulation.clearBattle();
     this.publishWaveMetrics(true);
     this.shots = [];
     if (!this.round || !this.expedition) return;
     this.expedition.showRound(this.round);
     this.expedition.refresh();
+    this.showEvacuation();
   }
 
   private place(kind: "wall" | "tower", cell: GridPosition | null): void {
@@ -541,8 +634,15 @@ export class DefenseDebug {
   }
 
   private onEvent(event: DefenseEvent, metadata: DefenseEventMetadata): void {
-    const credit = this.expedition?.economy.handleEvent(event, metadata.waveId) ?? 0;
-    this.economyHistory?.creditKill(metadata.waveId, credit);
+    const batch = metadata.evacuationBatch;
+    const rewardCohort = batch === undefined ? metadata.waveId : -batch;
+    const credit = this.expedition?.economy.handleEvent(event, rewardCohort) ?? 0;
+    if (batch === undefined) this.economyHistory?.creditKill(metadata.waveId, credit);
+    if (event.type === "evacuationHit" && this.round && batch !== undefined) {
+      const damage = this.round.hitEvacuation(event.damage);
+      this.simulation.recordEvacuationDamage(batch, damage);
+      if (this.roundEnded) this.stopCombat();
+    }
     if (event.type === "towerEffect" || (event.type === "towerShot" && (metadata.towerHit?.kind ?? "standard") === "standard")) {
       this.shots.push({ event, expires: this.timeMs + SHOT_VISIBLE_MS });
     }

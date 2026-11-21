@@ -34,7 +34,7 @@ function write(element: HTMLElement, text: string): void {
 
 const PHASE_NAMES: Record<ExpeditionPhase, string> = {
   preparing: "准备中", attacking: "敌人进攻中", recovering: "休整中",
-  won: "获胜 · 已抵达北端目标", lost: "战败 · 玩家生命耗尽",
+  evacuating: "撤离防守 · 最终敌袭", won: "获胜 · 已抵达北端目标", lost: "战败 · 玩家生命耗尽",
 };
 
 const CARD_DRAW_FEEDBACK_MS = 1_750;
@@ -325,14 +325,16 @@ export class ExpeditionControls {
     if (this.finished) this.selected = undefined;
     if (this.state.dataset.phase !== phase) this.state.dataset.phase = phase;
     const upcoming = round.upcoming;
-    write(this.state, phase === "attacking" ? `第 ${wave} 波开始 · 敌人进攻中` : PHASE_NAMES[phase]);
+    const terminal = phase === "won" && round.evacuation ? "获胜 · 撤离成功"
+      : phase === "lost" && round.lossReason === "evacuation" ? "战败 · 撤离装置已摧毁" : undefined;
+    write(this.state, phase === "attacking" ? `第 ${wave} 波开始 · 敌人进攻中` : terminal ?? PHASE_NAMES[phase]);
     write(this.playerHp, String(playerHp));
     write(this.wave, String(wave));
     write(this.pressure, String(pressure));
     write(this.stage, `${stage + 1} · ${round.strength.enemyHp} HP`);
     const waitingLabel = this.challenge && phase === "preparing" ? "首波倒计时" : "下波倒计时";
-    write(this.timeLabel, this.finished ? "剩余时间" : upcoming ? waitingLabel : "进攻剩余");
-    write(this.time, this.finished ? "—" : `${Math.ceil(remainingMs / 1000)} 秒`);
+    write(this.timeLabel, phase === "evacuating" ? "最终敌袭" : this.finished ? "剩余时间" : upcoming ? waitingLabel : "进攻剩余");
+    write(this.time, phase === "evacuating" ? "见北端装置" : this.finished ? "—" : `${Math.ceil(remainingMs / 1000)} 秒`);
     write(this.nextCount, upcoming ? `${upcoming.count} 只` : "—");
   }
 

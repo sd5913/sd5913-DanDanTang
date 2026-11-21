@@ -145,6 +145,10 @@ h1 {
 .build-preview[data-state="valid"] { color: #a3edcc; }
 .build-preview[data-state="invalid"] { color: #ffb1aa; }
 
+#evacuation { margin-top: 0.45rem; }
+#evacuation-route { color: #ffcf90; }
+#evacuation[data-outcome="evacuation"] #evacuation-health { color: #ffb1aa; }
+
 .merge-panel {
   margin-block: 0.45rem;
   padding: 0.35rem 0.55rem;

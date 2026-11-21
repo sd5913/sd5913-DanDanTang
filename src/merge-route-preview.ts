@@ -1,6 +1,7 @@
 import { EnemyNavigation } from "./enemy-navigation.ts";
 import type { NavigationApproach, NavigationMap } from "./enemy-navigation.ts";
 import type { Building } from "./buildings.ts";
+import type { EvacuationBatch } from "./evacuation.ts";
 import type { GridPosition, TerrainMap } from "./terrain.ts";
 
 export interface MergeRouteKnowledge {
@@ -33,6 +34,7 @@ export interface MergeRouteSubject {
   readonly cell: GridPosition;
   readonly hasTargetedBuilding: boolean;
   readonly targetKey?: string;
+  readonly evacuationBatch?: EvacuationBatch;
 }
 
 export interface MergeRouteWorld {
@@ -42,7 +44,7 @@ export interface MergeRouteWorld {
 }
 
 interface PursuitTarget {
-  readonly kind: "building" | "player";
+  readonly kind: "building" | "player" | "evacuation";
   readonly cell: GridPosition;
   readonly buildingId?: string;
 }
@@ -73,11 +75,12 @@ export function pursuitTargetKey(target: PursuitTarget): string {
 function trace(world: MergeRouteWorld, from: GridPosition, target: PursuitTarget, isKnown: MergeRouteKnowledge["isKnown"]):
 NavigationApproach | undefined {
   return world.navigation.traceApproach(from, target.cell, isKnown, target.kind !== "player",
-    target.buildingId !== undefined ? world.attackableBuildings : undefined);
+    target.buildingId !== undefined ? world.attackableBuildings : undefined, target.kind === "evacuation");
 }
 
 function sameBoundary(first: NavigationApproach | undefined, second: NavigationApproach | undefined): boolean {
   if (first?.boundary === "wall") return second?.boundary === "wall" && first.wallId === second.wallId;
+  if (first?.boundary === "building") return second?.boundary === "building" && first.buildingId === second.buildingId;
   return first?.boundary === second?.boundary;
 }
 
@@ -228,7 +231,7 @@ export class MergeRouteForecaster {
     if (next.route.boundary === "contact" && old.route?.boundary !== "contact") {
       return { kind: "opened", after: next.route.steps, representative };
     }
-    if (!old.route || !sameBoundary(old.route, next.route)) return UNKNOWN;
+    if (!old.route || !sameBoundary(old.route, next.route) || next.route.boundary === "building") return UNKNOWN;
     return {
       kind: next.route.steps < old.route.steps ? "shorter" : "unchanged",
       before: old.route.steps, after: next.route.steps, representative,

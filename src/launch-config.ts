@@ -25,6 +25,8 @@ interface LaunchConfig {
   readonly debugControls: boolean;
   readonly towerEvolution: boolean;
   readonly manualMerge: boolean;
+  readonly evacuation: boolean;
+  readonly towerTargeting: boolean;
   readonly towerTuning: TowerTuning;
 }
 
@@ -36,6 +38,7 @@ export function resolveLaunch(params: URLSearchParams, environment: "production"
       ...PLAYTEST_PROFILE,
       diagnostics: false, mode: "play", fixture: null,
       fogEnabled: true, roundSpeed: false, debugControls: false, towerEvolution: true, manualMerge: true,
+      evacuation: true, towerTargeting: true,
     };
   }
 
@@ -54,6 +57,8 @@ export function resolveLaunch(params: URLSearchParams, environment: "production"
     debugControls: params.get("debug") === "1",
     towerEvolution: params.get("evolution") === "1",
     manualMerge: params.get("merge") === "manual",
+    evacuation: params.get("evacuation") === "1",
+    towerTargeting: params.get("targeting") === "1",
     towerTuning: CONTROL_TOWER_TUNING,
   };
 }

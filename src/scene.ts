@@ -36,7 +36,7 @@ export class GridScene extends Phaser.Scene {
   private defense?: DefenseDebug;
   private boardRenderer!: GridRenderer;
   private hud!: DebugHud;
-  private keys!: Record<"W" | "A" | "S" | "D" | "R" | "G", Phaser.Input.Keyboard.Key>;
+  private keys!: Record<"W" | "A" | "S" | "D" | "R" | "G" | "E", Phaser.Input.Keyboard.Key>;
   private hovered: GridPosition | null = null;
   private gridVisible = true;
   private reachedGoal = false;
@@ -63,7 +63,7 @@ export class GridScene extends Phaser.Scene {
     this.hud = new DebugHud();
     const keyboard = this.input.keyboard;
     if (!keyboard) throw new Error("Keyboard input is unavailable");
-    this.keys = keyboard.addKeys("W,A,S,D,R,G", false) as typeof this.keys;
+    this.keys = keyboard.addKeys("W,A,S,D,R,G,E", false) as typeof this.keys;
     if (this.defenseOptions) {
       const fog = this.fog;
       const knowledge: MergeRouteKnowledge = {
@@ -73,6 +73,7 @@ export class GridScene extends Phaser.Scene {
         allKnown: fog ? undefined : true,
       };
       this.defense = new DefenseDebug(this, this.terrain, this.player, this.defenseOptions, knowledge);
+      if (this.defenseOptions.evacuation) this.keys.E.on("down", this.activateEvacuation, this);
     }
     const retry = document.getElementById("retry-round");
     if (retry && this.defenseOptions?.worldSeed !== undefined) {
@@ -299,7 +300,12 @@ export class GridScene extends Phaser.Scene {
     this.boardRenderer.showMiningTarget(null);
   }
 
+  private activateEvacuation(): void {
+    if (this.defense?.activateEvacuation()) this.stopMining();
+  }
+
   private shutdown(): void {
+    this.keys.E.off("down", this.activateEvacuation, this);
     this.stopMining();
     this.game.events.off(Phaser.Core.Events.BLUR, this.stopMining, this);
     this.game.events.off(Phaser.Core.Events.PAUSE, this.stopMining, this);
@@ -325,7 +331,7 @@ export class GridScene extends Phaser.Scene {
     this.boardRenderer.movePlayer(this.player.position);
     this.hud.showPlayer(cell, this.terrain.worldToChunk(cell)?.chunk);
     this.defense?.showBiome(this.terrain.getBiome(cell) ?? "ordinary");
-    if (!this.reachedGoal && this.terrain.isGoal(cell) && (this.defense?.reachGoal() ?? true)) {
+    if (!this.defenseOptions?.evacuation && !this.reachedGoal && this.terrain.isGoal(cell) && (this.defense?.reachGoal() ?? true)) {
       this.reachedGoal = true;
       this.hud.showGoal(true, this.defenseOptions?.worldSeed !== undefined);
     }
@@ -349,6 +355,6 @@ export class GridScene extends Phaser.Scene {
     }
     this.updateHover(this.hovered);
     this.hud.showDig();
-    this.hud.showGoal(false, this.defenseOptions?.worldSeed !== undefined);
+    if (!this.defenseOptions?.evacuation) this.hud.showGoal(false, this.defenseOptions?.worldSeed !== undefined);
   }
 }

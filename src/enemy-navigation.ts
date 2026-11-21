@@ -6,18 +6,27 @@ export type NavigationMap = Pick<TerrainMap, "columns" | "rows" | "revision" | "
 export type NavigationAction =
   | { readonly kind: "move"; readonly cell: GridPosition }
   | { readonly kind: "wall"; readonly cell: GridPosition; readonly wallId: string }
+  | { readonly kind: "building"; readonly cell: GridPosition; readonly buildingId: string }
   | { readonly kind: "arrived" }
   | { readonly kind: "unreachable" };
 
 export type NavigationApproach = { readonly steps: number; readonly known: boolean } & (
   | { readonly boundary: "contact" }
   | { readonly boundary: "wall"; readonly wallId: string }
+  | { readonly boundary: "building"; readonly buildingId: string }
 );
 
 interface RouteField {
   readonly targets: readonly number[];
   readonly open: { readonly distance: Int32Array; readonly owner: Int32Array };
-  breach?: { readonly distance: Float64Array; readonly owner: Int32Array; readonly entryCost: Int32Array };
+  breach?: BreachField;
+  structureBreach?: BreachField;
+}
+
+interface BreachField {
+  readonly distance: Float64Array;
+  readonly owner: Int32Array;
+  readonly entryCost: Int32Array;
 }
 
 interface SearchEntry {
@@ -57,7 +66,7 @@ export class EnemyNavigation {
     return this.computeTimeMs;
   }
 
-  next(from: GridPosition, target: GridPosition, allowBreach = true): NavigationAction {
+  next(from: GridPosition, target: GridPosition, allowBreach = true, allowStructureBreach = false): NavigationAction {
     if (!this.isInside(from) || !this.isInside(target) || !this.map.isWalkable(from)) return UNREACHABLE;
     const fromIndex = this.index(from);
     const targetIndex = this.index(target);
@@ -66,12 +75,12 @@ export class EnemyNavigation {
       return exit === undefined ? UNREACHABLE : { kind: "move", cell: this.position(exit) };
     }
 
-    return this.followField(fromIndex, this.getField(targetIndex), allowBreach)?.action ?? UNREACHABLE;
+    return this.followField(fromIndex, this.getField(targetIndex), allowBreach, allowStructureBreach)?.action ?? UNREACHABLE;
   }
 
   /** Trace the same chosen field to contact or to the first wall the live unit would hit. */
   traceApproach(from: GridPosition, target: GridPosition, isKnown: (cell: GridPosition) => boolean,
-    allowBreach: boolean, buildings?: readonly Building[]): NavigationApproach | undefined {
+    allowBreach: boolean, buildings?: readonly Building[], allowStructureBreach = false): NavigationApproach | undefined {
     if (!this.isInside(from) || !this.isInside(target) || !this.map.isWalkable(from)) return undefined;
     let index = this.index(from);
     const targetIndex = this.index(target);
@@ -80,11 +89,14 @@ export class EnemyNavigation {
 
     const field = buildings ? this.getBuildingField(buildings) : this.getField(targetIndex);
     for (let steps = 0; steps < this.size; steps += 1) {
-      const next = this.followField(index, field, allowBreach);
+      const next = this.followField(index, field, allowBreach, allowStructureBreach);
       if (!next || field.targets[next.owner] !== targetIndex) return undefined;
       if (next.action.kind === "arrived") return { boundary: "contact", steps, known };
       if (next.action.kind === "wall") {
         return { boundary: "wall", wallId: next.action.wallId, steps, known: known && isKnown(next.action.cell) };
+      }
+      if (next.action.kind === "building") {
+        return { boundary: "building", buildingId: next.action.buildingId, steps, known: known && isKnown(next.action.cell) };
       }
       if (next.action.kind !== "move") return undefined;
       index = this.index(next.action.cell);
@@ -108,7 +120,7 @@ export class EnemyNavigation {
     return this.buildingField.routes;
   }
 
-  private followField(fromIndex: number, field: RouteField, allowBreach: boolean): RouteChoice | undefined {
+  private followField(fromIndex: number, field: RouteField, allowBreach: boolean, allowStructureBreach = false): RouteChoice | undefined {
     const openDistance = field.open.distance[fromIndex];
     const owner = field.open.owner[fromIndex];
     if (openDistance === 0) return { owner, action: ARRIVED };
@@ -121,7 +133,9 @@ export class EnemyNavigation {
     }
 
     if (!allowBreach) return undefined;
-    const { distance, owner: owners, entryCost } = field.breach ??= this.buildBreachField(field.targets);
+    const breach = allowStructureBreach ? field.structureBreach ??= this.buildBreachField(field.targets, true)
+      : field.breach ??= this.buildBreachField(field.targets, false);
+    const { distance, owner: owners, entryCost } = breach;
     const best = distance[fromIndex];
     if (!Number.isFinite(best)) return undefined;
     const breachOwner = owners[fromIndex];
@@ -131,8 +145,11 @@ export class EnemyNavigation {
       if (cost === 0 || owners[nextIndex] !== breachOwner || distance[nextIndex] + cost !== best) continue;
       const cell = this.position(nextIndex);
       if (cost === 1) return { owner: breachOwner, action: { kind: "move", cell } };
-      const wall = this.map.getBuilding(cell);
-      if (wall?.kind === "wall") return { owner: breachOwner, action: { kind: "wall", cell, wallId: wall.id } };
+      const building = this.map.getBuilding(cell);
+      if (building?.kind === "wall") return { owner: breachOwner, action: { kind: "wall", cell, wallId: building.id } };
+      if (building && allowStructureBreach) {
+        return { owner: breachOwner, action: { kind: "building", cell, buildingId: building.id } };
+      }
     }
     return undefined;
   }
@@ -194,20 +211,23 @@ export class EnemyNavigation {
     return { distance, owner };
   }
 
-  private buildBreachField(targets: readonly number[]): NonNullable<RouteField["breach"]> {
+  private buildBreachField(targets: readonly number[], allowStructureBreach: boolean): BreachField {
     const start = performance.now();
     this.searches += 1;
     const distance = new Float64Array(this.size).fill(Infinity);
     const owner = new Int32Array(this.size).fill(-1);
     const entryCost = new Int32Array(this.size);
     const targetCells = new Set(targets);
-    // Fixed topological cost prefers fewer walls, then shorter routes, independently of wall HP.
+    // Fixed topological cost prefers fewer blockers, then shorter routes, independently of structure HP.
     const wallCost = this.size + 1;
     for (let index = 0; index < this.size; index += 1) {
       if (targetCells.has(index)) continue;
       const cell = this.position(index);
       if (this.map.isWalkable(cell)) entryCost[index] = 1;
-      else if (this.map.getBuilding(cell)?.kind === "wall") entryCost[index] = wallCost;
+      else {
+        const building = this.map.getBuilding(cell);
+        if (building && (building.kind === "wall" || allowStructureBreach)) entryCost[index] = wallCost;
+      }
     }
 
     const openQueue: SearchEntry[] = [];

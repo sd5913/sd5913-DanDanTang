@@ -5,8 +5,11 @@ import { TILE_SIZE } from "./player.ts";
 import type { Point } from "./player.ts";
 import type { GridPosition, TerrainReader } from "./terrain.ts";
 
-const ENEMY_RADIUS_TILES = ENEMY_RADIUS / TILE_SIZE;
+export const TOWER_ENEMY_RADIUS = ENEMY_RADIUS / TILE_SIZE;
+export const PIERCING_BEAM_HALF_WIDTH = 1 / TILE_SIZE;
+export const PIERCING_FALLBACK = Object.freeze({ range: 3, damage: 2 });
 const CORNER_EPSILON = 1e-9;
+export const TARGET_DISTANCE_EPSILON = 1e-9;
 
 export interface PiercingCoverage {
   readonly kind: "piercing";
@@ -14,6 +17,7 @@ export interface PiercingCoverage {
   readonly axis: TowerAxis;
   readonly negativeReach: number;
   readonly positiveReach: number;
+  readonly halfWidth?: number;
 }
 
 interface BurstCoverage {
@@ -34,20 +38,41 @@ function piercingReach(map: TerrainReader, { col, row }: GridPosition, axis: Tow
   return range;
 }
 
-export function buildEvolvedTowerCoverage(map: TerrainReader, cell: GridPosition, attributes: PiercingTowerAttributes): PiercingCoverage;
-export function buildEvolvedTowerCoverage(map: TerrainReader, cell: GridPosition, attributes: BurstTowerAttributes): BurstCoverage;
-export function buildEvolvedTowerCoverage(map: TerrainReader, cell: GridPosition, attributes: EvolvedTowerAttributes): EvolvedTowerCoverage;
-export function buildEvolvedTowerCoverage(map: TerrainReader, cell: GridPosition, attributes: EvolvedTowerAttributes): EvolvedTowerCoverage {
+export function buildEvolvedTowerCoverage(map: TerrainReader, cell: GridPosition, attributes: PiercingTowerAttributes, bodyAware?: boolean): PiercingCoverage;
+export function buildEvolvedTowerCoverage(map: TerrainReader, cell: GridPosition, attributes: BurstTowerAttributes, bodyAware?: boolean): BurstCoverage;
+export function buildEvolvedTowerCoverage(map: TerrainReader, cell: GridPosition, attributes: EvolvedTowerAttributes, bodyAware?: boolean): EvolvedTowerCoverage;
+export function buildEvolvedTowerCoverage(map: TerrainReader, cell: GridPosition, attributes: EvolvedTowerAttributes,
+  bodyAware = false): EvolvedTowerCoverage {
   const { range } = attributes;
   const origin = { x: cell.col + 0.5, y: cell.row + 0.5 };
-  if (attributes.kind === "burst") return { kind: "burst", origin, rangeSquared: range ** 2 };
+  if (attributes.kind === "burst") return { kind: "burst", origin, rangeSquared: towerSearchRadius(range, bodyAware) ** 2 };
 
   const { axis } = attributes;
   return {
     kind: "piercing", origin, axis,
     negativeReach: piercingReach(map, cell, axis, range, -1),
     positiveReach: piercingReach(map, cell, axis, range, 1),
+    ...(bodyAware ? { halfWidth: PIERCING_BEAM_HALF_WIDTH } : {}),
   };
+}
+
+export function towerSearchRadius(range: number, bodyAware: boolean): number {
+  return range + (bodyAware ? TOWER_ENEMY_RADIUS : 0);
+}
+
+export function intersectsPiercingBeam(coverage: PiercingCoverage, target: Point,
+  negativeReach = coverage.negativeReach, positiveReach = coverage.positiveReach): boolean {
+  const dx = target.x - coverage.origin.x;
+  const dy = target.y - coverage.origin.y;
+  const forward = coverage.axis === "horizontal" ? dx : dy;
+  const cross = Math.abs(coverage.axis === "horizontal" ? dy : dx);
+  if (coverage.halfWidth === undefined) {
+    return cross <= TOWER_ENEMY_RADIUS && forward >= -negativeReach && forward <= positiveReach;
+  }
+  // Circle-to-rectangle contact also catches partial body overlap at the beam's end.
+  const axialGap = Math.max(-negativeReach - forward, forward - positiveReach, 0);
+  const crossGap = Math.max(cross - coverage.halfWidth, 0);
+  return axialGap ** 2 + crossGap ** 2 <= TOWER_ENEMY_RADIUS ** 2 + TARGET_DISTANCE_EPSILON;
 }
 
 export function evolvedTargetDistanceSquared(map: TerrainReader, coverage: EvolvedTowerCoverage, target: Point,
@@ -57,13 +82,10 @@ export function evolvedTargetDistanceSquared(map: TerrainReader, coverage: Evolv
   const distance = dx ** 2 + dy ** 2;
   if (distance > nearestSquared) return;
   if (coverage.kind === "burst") {
-    return distance <= coverage.rangeSquared && hasTowerLineOfSight(map, coverage.origin, target) ? distance : undefined;
+    return distance <= coverage.rangeSquared + TARGET_DISTANCE_EPSILON && hasTowerLineOfSight(map, coverage.origin, target) ? distance : undefined;
   }
-
-  const forward = coverage.axis === "horizontal" ? dx : dy;
-  const cross = coverage.axis === "horizontal" ? dy : dx;
-  // The line must intersect the actual enemy body. A whole adjacent lane is outside this width.
-  if (Math.abs(cross) > ENEMY_RADIUS_TILES || forward < -coverage.negativeReach || forward > coverage.positiveReach) return;
+  if (!intersectsPiercingBeam(coverage, target)) return;
+  if (coverage.halfWidth !== undefined && !hasTowerLineOfSight(map, coverage.origin, target)) return;
   return distance;
 }
 
