@@ -24,6 +24,7 @@ interface LaunchConfig {
   readonly roundSpeed: RoundSpeed;
   readonly debugControls: boolean;
   readonly towerEvolution: boolean;
+  readonly manualMerge: boolean;
   readonly towerTuning: TowerTuning;
 }
 
@@ -34,7 +35,7 @@ export function resolveLaunch(params: URLSearchParams, environment: "production"
     return {
       ...PLAYTEST_PROFILE,
       diagnostics: false, mode: "play", fixture: null,
-      fogEnabled: true, roundSpeed: false, debugControls: false, towerEvolution: true,
+      fogEnabled: true, roundSpeed: false, debugControls: false, towerEvolution: true, manualMerge: true,
     };
   }
 
@@ -52,6 +53,7 @@ export function resolveLaunch(params: URLSearchParams, environment: "production"
     roundSpeed: speed === "wait-test" ? "wait-test" : speed === "test",
     debugControls: params.get("debug") === "1",
     towerEvolution: params.get("evolution") === "1",
+    manualMerge: params.get("merge") === "manual",
     towerTuning: CONTROL_TOWER_TUNING,
   };
 }

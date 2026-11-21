@@ -19,7 +19,8 @@ Open the address printed by Vite to start the current Playtest Build. Add `?seed
 | --- | --- |
 | WASD | Move. |
 | Hold left mouse button | Dig an adjacent tile. After clearing it, keep holding and use WASD to continue in that direction. |
-| Select a building card, then click the map | Place on a visible, empty tile in the eight surrounding cells. Press Esc to cancel selection. |
+| Select a building card, then click the map | Place on a visible, empty tile in the eight surrounding cells. Hold Shift to keep placing the same card while it is in stock. Press Esc to cancel. |
+| Click a ready building, then choose **合成** (Merge) | Inspect the result and merge when you are next to any of the four participating buildings. |
 | R or **重试当前种子** | Restart with the current world seed. |
 | **新开一局** | Start with a different world seed. |
 | G | Toggle the grid. |
@@ -32,9 +33,9 @@ You start with a level-one tool and no currency, cards, or structures. Each poin
 
 Walls start at 25 HP and consume enemies that collide with them. Towers, economy buildings, and technology facilities have 1 HP. An enemy that destroys one stays in play. Enemies that lose sight of the player target reachable buildings first. If that target is lost and there are no other reachable buildings, the enemy can take an open detour to the player.
 
-Four orthogonally connected level-one buildings of the same kind merge at the oldest building's position and free the other three tiles. A level-two wall has 50 HP and carries forward lost HP. A level-two producer doubles its output per cycle. Towers retain their cooldown, and producers retain time spent on their current cycle.
+Four orthogonally connected level-one walls, towers, or producers of the same kind become ready to merge. They keep working separately until you choose Merge. The upgrade uses the oldest building’s position and frees the other three tiles. The freed space briefly highlights so you can rebuild with the cards in your inventory. A level-two wall has 50 HP and carries forward lost HP. A level-two producer doubles its output per cycle. Towers retain their cooldown, and producers retain time spent on their current cycle.
 
-I chose to let the shape of four connected towers determine what they become. A straight row or column makes a Piercing Tower with a fixed firing axis. Every other connected shape makes a Burst Tower. Before placing the final tower, check the preview for the result and the tiles that will be freed. The straight mark distinguishes Piercing from the ring used for Burst. Hover over a visible tower to inspect its current attributes.
+I chose to let the shape of four connected towers determine what they become. A straight row or column makes a Piercing Tower with a fixed firing axis. Every other connected shape makes a Burst Tower. Select a ready group to preview the upgrade, the retained tile, and the three tiles that will open. The route warning compares a visible enemy’s approach or a known entrance sample. It flags a shorter or newly passable route and shows when fog or a target change prevents a comparison. The straight mark distinguishes Piercing from the ring used for Burst. Hover over a visible tower to inspect its current attributes.
 
 | Candidate tower | Attack | Interval | Base range |
 | --- | --- | ---: | ---: |
@@ -58,9 +59,9 @@ npm run test:browser
 npm run preview
 ```
 
-The build writes the player distribution to `dist/`. Use `--playtest` to test this production output in a locally installed Edge. The historical browser suite builds its own temporary diagnostic artifact. Use `--normal-round` for standard-timing regression, or `--challenge`, `--building-balance`, `--contacts`, and `--midgame` for targeted suites. The tower evolution suite is available with `--tower-evolution`. The standalone test scripts `tests/browser-stress.mjs` and `tests/browser-midgame-perf.mjs` measure short load and sustained defense. Run `node tests/tower-specialization.mjs` for the matched radius and cooldown experiments and `node tests/tower-space-comparison.mjs` for the equal-cost construction comparison. Use `node tests/browser-tower-evolution-perf.mjs` to sample both evolved towers under load in Edge.
+The build writes the player distribution to `dist/`. Use `--playtest` to test this production output in a locally installed Edge. The historical browser suite builds its own temporary diagnostic artifact. Use `--normal-round` for standard-timing regression, or `--challenge`, `--building-balance`, `--contacts`, and `--midgame` for targeted suites. The tower evolution suite is available with `--tower-evolution`. The standalone test scripts `tests/browser-stress.mjs` and `tests/browser-midgame-perf.mjs` measure short load and sustained defense. Run `node tests/tower-specialization.mjs` for the matched radius and cooldown experiments and `node tests/tower-space-comparison.mjs` for the equal-cost construction comparison. Run `node tests/merge-timing.mjs` to compare automatic, early, and delayed merges. Use `node tests/browser-merge-performance.mjs --record` to measure selection and route previews under load in Edge. The tower combat load test remains available through `node tests/browser-tower-evolution-perf.mjs`.
 
-For development diagnostics, start the dev server and use `?diagnostics=1&mode=play`. This opens the historical difficulty, building, and midgame selectors. Add `&debug=1` to access tools such as **玩家受击记录**. In this diagnostic environment, `&evolution=1` enables shape-based towers with the original combat values. The historical level-two tower remains available for regression and comparison. The player distribution accepts a world seed and uses its fixed playtest rules for every round.
+For development diagnostics, start the dev server and use `?diagnostics=1&mode=play`. This opens the historical difficulty, building, and midgame selectors. Add `&debug=1` to access tools such as **玩家受击记录**. In this diagnostic environment, `&evolution=1` enables shape-based towers with the original combat values. Add `&merge=manual` to test the current interaction in the diagnostic build. Historical immediate merges and the historical level-two tower remain available to regression tests. The player distribution accepts a world seed and uses its fixed playtest rules for every round.
 
 ## Project records
 

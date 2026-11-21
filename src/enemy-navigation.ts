@@ -1,13 +1,18 @@
 import type { Building } from "./buildings.ts";
 import type { GridPosition, TerrainMap } from "./terrain.ts";
 
-type NavigationMap = Pick<TerrainMap, "columns" | "rows" | "revision" | "isWalkable" | "getBuilding">;
+export type NavigationMap = Pick<TerrainMap, "columns" | "rows" | "revision" | "isWalkable" | "getBuilding">;
 
 export type NavigationAction =
   | { readonly kind: "move"; readonly cell: GridPosition }
   | { readonly kind: "wall"; readonly cell: GridPosition; readonly wallId: string }
   | { readonly kind: "arrived" }
   | { readonly kind: "unreachable" };
+
+export type NavigationApproach = { readonly steps: number; readonly known: boolean } & (
+  | { readonly boundary: "contact" }
+  | { readonly boundary: "wall"; readonly wallId: string }
+);
 
 interface RouteField {
   readonly targets: readonly number[];
@@ -64,16 +69,43 @@ export class EnemyNavigation {
     return this.followField(fromIndex, this.getField(targetIndex), allowBreach)?.action ?? UNREACHABLE;
   }
 
+  /** Trace the same chosen field to contact or to the first wall the live unit would hit. */
+  traceApproach(from: GridPosition, target: GridPosition, isKnown: (cell: GridPosition) => boolean,
+    allowBreach: boolean, buildings?: readonly Building[]): NavigationApproach | undefined {
+    if (!this.isInside(from) || !this.isInside(target) || !this.map.isWalkable(from)) return undefined;
+    let index = this.index(from);
+    const targetIndex = this.index(target);
+    let known = isKnown(from) && isKnown(target);
+    if (index === targetIndex) return { boundary: "contact", steps: 0, known };
+
+    const field = buildings ? this.getBuildingField(buildings) : this.getField(targetIndex);
+    for (let steps = 0; steps < this.size; steps += 1) {
+      const next = this.followField(index, field, allowBreach);
+      if (!next || field.targets[next.owner] !== targetIndex) return undefined;
+      if (next.action.kind === "arrived") return { boundary: "contact", steps, known };
+      if (next.action.kind === "wall") {
+        return { boundary: "wall", wallId: next.action.wallId, steps, known: known && isKnown(next.action.cell) };
+      }
+      if (next.action.kind !== "move") return undefined;
+      index = this.index(next.action.cell);
+      known = known && isKnown(next.action.cell);
+    }
+    return undefined;
+  }
+
   /** The caller reuses the current building list until map topology changes. */
   nextBuilding(from: GridPosition, buildings: readonly Building[]): { building: Building; action: NavigationAction } | undefined {
     if (buildings.length === 0 || !this.isInside(from) || !this.map.isWalkable(from)) return undefined;
+    const choice = this.followField(this.index(from), this.getBuildingField(buildings), true);
+    return choice && { building: buildings[choice.owner], action: choice.action };
+  }
+
+  private getBuildingField(buildings: readonly Building[]): RouteField {
     this.syncRevision();
     if (this.buildingField?.buildings !== buildings) {
       this.buildingField = { buildings, routes: this.createField(buildings.map((building) => this.index(building.cell))) };
     }
-
-    const choice = this.followField(this.index(from), this.buildingField.routes, true);
-    return choice && { building: buildings[choice.owner], action: choice.action };
+    return this.buildingField.routes;
   }
 
   private followField(fromIndex: number, field: RouteField, allowBreach: boolean): RouteChoice | undefined {

@@ -8,7 +8,7 @@ import { MIDGAME_EXPERIMENTS, waveDeployment } from "../src/midgame-experiments.
 const publicLaunch = {
   diagnostics: false, mode: "play", fixture: null,
   difficulty: "challenge", buildingBalance: "w25", midgame: "combined",
-  fogEnabled: true, roundSpeed: false, debugControls: false, towerEvolution: true,
+  fogEnabled: true, roundSpeed: false, debugControls: false, towerEvolution: true, manualMerge: true,
   towerTuning: PLAYTEST_TOWER_TUNING,
 };
 
@@ -17,7 +17,7 @@ test("production opens the unified playtest and ignores experiment URLs", () => 
   assert.deepEqual(publicLaunch.towerTuning, { burstRadius: 2, piercingIntervalMs: 750 });
   assert.deepEqual(CONTROL_TOWER_TUNING, { burstRadius: 1.25, piercingIntervalMs: 900 });
   const overrides = new URLSearchParams(
-    "diagnostics=1&mode=defense&map=single&difficulty=baseline&build=w15&midgame=tier&fog=off&speed=test&debug=1&evolution=0&burstRadius=2&piercingIntervalMs=123",
+    "diagnostics=1&mode=defense&map=single&difficulty=baseline&build=w15&midgame=tier&fog=off&speed=test&debug=1&evolution=0&merge=auto&burstRadius=2&piercingIntervalMs=123",
   );
   assert.deepEqual(resolveLaunch(overrides, "production"), publicLaunch);
 });
@@ -44,10 +44,11 @@ test("development requires an opt-in while a dedicated regression build accepts 
   assert.deepEqual(development, {
     diagnostics: true, mode: "play", fixture: null, difficulty: "challenge",
     buildingBalance: "w35", midgame: "armored", fogEnabled: false, roundSpeed: "wait-test",
-    debugControls: true, towerEvolution: false, towerTuning: CONTROL_TOWER_TUNING,
+    debugControls: true, towerEvolution: false, manualMerge: false, towerTuning: CONTROL_TOWER_TUNING,
   });
   assert.deepEqual(resolveLaunch(new URLSearchParams(flags), "regression"), development);
   assert.equal(resolveLaunch(new URLSearchParams(flags + "&evolution=1"), "regression").towerEvolution, true);
+  assert.equal(resolveLaunch(new URLSearchParams(flags + "&merge=manual"), "regression").manualMerge, true);
   const baseline = resolveLaunch(new URLSearchParams("mode=play&difficulty=b&build=w15&midgame=combined"), "regression");
   assert.deepEqual([baseline.difficulty, baseline.buildingBalance, baseline.midgame], ["b", "control", "control"]);
   assert.equal(resolveLaunch(new URLSearchParams("map=single"), "regression").fixture, "single");

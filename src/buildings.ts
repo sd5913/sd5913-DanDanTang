@@ -27,6 +27,32 @@ export interface BuildingSynthesisPreview {
   readonly evolution?: TowerEvolution;
 }
 
+export interface ReadyBuildingSynthesis extends BuildingSynthesisPreview {
+  readonly state: "MERGE_READY";
+  readonly key: string;
+  readonly participants: readonly Building[];
+  readonly upgraded: Building;
+}
+
+export type BuildingSynthesisResult =
+  | { readonly success: true; readonly building: Building; readonly released: readonly GridPosition[] }
+  | { readonly success: false; readonly reason: "invalid" | "out-of-range" };
+
+interface SynthesisPlan {
+  readonly upgraded: Building;
+  readonly group: readonly Building[];
+}
+
+interface ReadyGroup {
+  readonly cells: readonly GridPosition[];
+  preview?: ReadyBuildingSynthesis;
+}
+
+export function isWithinSynthesisRange(preview: ReadyBuildingSynthesis, player: GridPosition): boolean {
+  return preview.participants.some(({ cell }) =>
+    Math.max(Math.abs(cell.col - player.col), Math.abs(cell.row - player.row)) === 1);
+}
+
 export interface WallImpact {
   /** Immutable wall state at the start of the impact. */
   readonly wall: Building;
@@ -68,6 +94,7 @@ export class BuildingStore {
   readonly #balance: BuildingBalanceId;
   readonly #towerEvolution: boolean;
   readonly #occupied = new Map<number, Building>();
+  readonly #readyGroups = new Map<number, ReadyGroup | null>();
   #nextId = 1;
 
   constructor(columns: number, balance: BuildingBalanceId = "control", towerEvolution = false) {
@@ -92,6 +119,7 @@ export class BuildingStore {
     const building = this.createBuilding(kind, cell, hp);
     this.#nextId += 1;
     this.#occupied.set(index, building);
+    this.#readyGroups.clear();
     return building;
   }
 
@@ -114,12 +142,69 @@ export class BuildingStore {
     // The prospective building already belongs to every rooted candidate, so it need not be inserted.
     const plan = this.planSynthesis(this.createBuilding(kind, cell, hp));
     if (!plan) return undefined;
-    const { upgraded, consumed } = plan;
-    return {
-      retained: upgraded.cell,
-      released: consumed.map((building) => building.cell),
-      ...(upgraded.evolution ? { evolution: upgraded.evolution } : {}),
-    };
+    return this.synthesisPreview(plan);
+  }
+
+  previewReadySynthesis(cell: GridPosition): ReadyBuildingSynthesis | undefined {
+    if (!this.canIndex(cell)) return undefined;
+    const root = this.get(cell);
+    if (root?.level !== 1 || root.kind === "technology") return undefined;
+    const key = this.index(cell);
+    if (!this.#readyGroups.has(key)) this.cacheReadyGroup(root);
+    const cached = this.#readyGroups.get(key);
+    if (!cached) return undefined;
+
+    const previous = cached.preview;
+    if (previous && cached.cells.every((site, index) => this.get(site) === previous.participants[index])) return previous;
+
+    // Damage changes the stored snapshot but not the occupants or candidate order.
+    const group = cached.cells.map((site) => this.get(site)!);
+    const plan = this.upgradeGroup(group);
+    if (!plan) return undefined;
+    const preview = this.synthesisPreview(plan);
+    cached.preview = Object.freeze({
+      ...preview,
+      released: Object.freeze(preview.released),
+      state: "MERGE_READY",
+      key: group.map(({ id }) => id).join(":"),
+      participants: Object.freeze(group),
+      upgraded: plan.upgraded,
+    });
+    return cached.preview;
+  }
+
+  executeReadySynthesis(expected: ReadyBuildingSynthesis, player: GridPosition): BuildingSynthesisResult {
+    const ready = this.previewReadySynthesis(expected.retained);
+    // Cell identity also rejects tokens from a different map with the same build IDs.
+    if (!ready || ready.retained !== expected.retained || ready.key !== expected.key) {
+      return { success: false, reason: "invalid" };
+    }
+    if (!isWithinSynthesisRange(ready, player)) return { success: false, reason: "out-of-range" };
+    const building = this.commitSynthesis({ upgraded: ready.upgraded, group: ready.participants });
+    return { success: true, building, released: ready.released };
+  }
+
+  private cacheReadyGroup(root: Building): void {
+    const component = [root];
+    const visited = new Set([root]);
+    let oldest = root;
+    for (const building of component) {
+      if (compareBuildings(building, oldest) < 0) oldest = building;
+      for (const { col, row } of DIRECTIONS) {
+        const cell = { col: building.cell.col + col, row: building.cell.row + row };
+        if (!this.canIndex(cell)) continue;
+        const neighbor = this.get(cell);
+        if (neighbor?.kind !== root.kind || neighbor.level !== 1 || visited.has(neighbor)) continue;
+        visited.add(neighbor);
+        component.push(neighbor);
+      }
+    }
+
+    // The oldest member of a connected group of four or more always belongs to a legal candidate.
+    // The existing lexicographic order therefore selects the same winner when rooted at that member.
+    const group = component.length >= 4 ? this.findSynthesisGroup(oldest) : undefined;
+    const ready = group ? { cells: group.map(({ cell }) => cell) } : null;
+    for (const { cell } of component) this.#readyGroups.set(this.index(cell), ready);
   }
 
   synthesize(cell: GridPosition): Building | undefined {
@@ -128,18 +213,31 @@ export class BuildingStore {
     if (root?.level !== 1) return undefined;
 
     const plan = this.planSynthesis(root);
-    if (!plan) return undefined;
-    const { upgraded, consumed } = plan;
-    for (const building of consumed) this.#occupied.delete(this.index(building.cell));
+    return plan ? this.commitSynthesis(plan) : undefined;
+  }
+
+  private commitSynthesis({ upgraded, group }: SynthesisPlan): Building {
+    for (const building of group.slice(1)) this.#occupied.delete(this.index(building.cell));
     this.#occupied.set(this.index(upgraded.cell), upgraded);
+    this.#readyGroups.clear();
     return upgraded;
   }
 
-  private planSynthesis(root: Building): { readonly upgraded: Building; readonly consumed: readonly Building[] } | undefined {
-    const group = this.findSynthesisGroup(root);
-    if (!group) return undefined;
+  private synthesisPreview({ upgraded, group }: SynthesisPlan): BuildingSynthesisPreview {
+    return {
+      retained: upgraded.cell,
+      released: group.slice(1).map(({ cell }) => cell),
+      ...(upgraded.evolution ? { evolution: upgraded.evolution } : {}),
+    };
+  }
 
-    const [incumbent, ...consumed] = group;
+  private planSynthesis(root: Building): SynthesisPlan | undefined {
+    const group = this.findSynthesisGroup(root);
+    return group ? this.upgradeGroup(group) : undefined;
+  }
+
+  private upgradeGroup(group: readonly Building[]): SynthesisPlan | undefined {
+    const [incumbent] = group;
     const maxHp = incumbent.kind === "wall" ? incumbent.maxHp * wallHpMultiplier(this.#balance, 2) : incumbent.maxHp;
     if (!Number.isSafeInteger(maxHp)) return undefined;
     const missingHp = incumbent.maxHp - incumbent.hp;
@@ -151,7 +249,7 @@ export class BuildingStore {
       hp: maxHp - missingHp,
       ...(evolution ? { evolution } : {}),
     });
-    return { upgraded, consumed };
+    return { upgraded, group };
   }
 
   private findSynthesisGroup(root: Building): Building[] | undefined {
@@ -184,6 +282,7 @@ export class BuildingStore {
     if (!building || (expectedId !== undefined && building.id !== expectedId)) return undefined;
 
     this.#occupied.delete(index);
+    this.#readyGroups.clear();
     return building;
   }
 
@@ -208,6 +307,7 @@ export class BuildingStore {
     const destroyed = hp === 0;
     if (destroyed) {
       this.#occupied.delete(index);
+      this.#readyGroups.clear();
     } else {
       this.#occupied.set(index, Object.freeze({ ...building, hp }));
     }
@@ -216,6 +316,7 @@ export class BuildingStore {
 
   clear(): void {
     this.#occupied.clear();
+    this.#readyGroups.clear();
   }
 
   private canIndex({ col, row }: GridPosition): boolean {

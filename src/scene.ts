@@ -5,6 +5,7 @@ import type { DefenseScenario } from "./defense-debug.ts";
 import { ExplorationFog } from "./fog.ts";
 import { FogRenderer } from "./fog-renderer.ts";
 import { DebugHud } from "./hud.ts";
+import type { MergeRouteKnowledge } from "./merge-route-preview.ts";
 import { MINING_CONFIG } from "./mining-config.ts";
 import { MiningSession } from "./mining.ts";
 import type { MiningStrike } from "./mining.ts";
@@ -46,7 +47,7 @@ export class GridScene extends Phaser.Scene {
   ) {
     super("grid");
     this.terrain = new TerrainMap(layout, {
-      autoMerge: wide ? undefined : false, biomes, buildingBalance: defenseOptions?.buildingBalance,
+      autoMerge: wide && !defenseOptions?.manualMerge ? undefined : false, biomes, buildingBalance: defenseOptions?.buildingBalance,
       towerEvolution: defenseOptions?.towerEvolution,
     });
     this.player = new Player(this.terrain.spawn);
@@ -64,7 +65,14 @@ export class GridScene extends Phaser.Scene {
     if (!keyboard) throw new Error("Keyboard input is unavailable");
     this.keys = keyboard.addKeys("W,A,S,D,R,G", false) as typeof this.keys;
     if (this.defenseOptions) {
-      this.defense = new DefenseDebug(this, this.terrain, this.player, this.defenseOptions, this.isVisible);
+      const fog = this.fog;
+      const knowledge: MergeRouteKnowledge = {
+        isVisible: this.isVisible,
+        isKnown: (cell) => !fog || fog.visibility(cell) !== "unknown",
+        get revision() { return fog?.revision ?? 0; },
+        allKnown: fog ? undefined : true,
+      };
+      this.defense = new DefenseDebug(this, this.terrain, this.player, this.defenseOptions, knowledge);
     }
     const retry = document.getElementById("retry-round");
     if (retry && this.defenseOptions?.worldSeed !== undefined) {
@@ -267,7 +275,8 @@ export class GridScene extends Phaser.Scene {
       || document.hidden || !document.hasFocus() || this.game.isPaused) return;
     const target = this.pointerCell(pointer);
     if (!target) return;
-    if (this.defense?.placeSelectedCard(target)) {
+    const keepPlacing = pointer.event instanceof MouseEvent && pointer.event.shiftKey;
+    if (this.defense?.handleBoardClick(target, keepPlacing)) {
       this.stopMining();
       return;
     }

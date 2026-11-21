@@ -13,6 +13,8 @@ import type { DifficultyId } from "./expedition-difficulty.ts";
 import { ExpeditionRound } from "./expedition-round.ts";
 import type { RoundSpeed } from "./expedition-round.ts";
 import type { BiomeId } from "./expedition-biomes.ts";
+import { MergeControls } from "./merge-controls.ts";
+import type { MergeRouteKnowledge } from "./merge-route-preview.ts";
 import { MIDGAME_EXPERIMENTS, waveDeployment } from "./midgame-experiments.ts";
 import type { MidgameExperimentId } from "./midgame-experiments.ts";
 import { cellCenter, TILE_SIZE, worldToCell } from "./player.ts";
@@ -27,6 +29,7 @@ const BREACH_NOTICE_MS = 4_500;
 const HIT_MARKER_MS = 160;
 const MAX_CONTACT_RECORDS = 24;
 const MAX_TOWER_EFFECT_RECORDS = 12;
+const MERGE_RELEASE_MS = 1_800;
 
 function field<T extends HTMLElement = HTMLElement>(id: string): T {
   const element = document.getElementById(id);
@@ -69,6 +72,7 @@ export interface DefenseScenario {
   readonly midgame?: MidgameExperimentId;
   readonly debugControls?: boolean;
   readonly towerEvolution?: boolean;
+  readonly manualMerge?: boolean;
   readonly towerTuning?: TowerTuning;
 }
 
@@ -94,6 +98,8 @@ export class DefenseDebug {
   private readonly playerTarget = field<HTMLInputElement>("test-player-target");
   private readonly keys?: Record<"B" | "T" | "X", Phaser.Input.Keyboard.Key>;
   private readonly expedition?: ExpeditionControls;
+  private readonly merge?: MergeControls;
+  private mergeRelease?: { readonly cells: readonly GridPosition[]; readonly untilMs: number };
   private readonly round?: ExpeditionRound;
   private readonly economyHistory?: WaveEconomyHistory;
   private shots: { readonly event: Shot; readonly expires: number }[] = [];
@@ -108,12 +114,12 @@ export class DefenseDebug {
   private breachExpiresAtMs = 0;
 
   constructor(scene: Phaser.Scene, map: TerrainMap, player: Player, scenario: DefenseScenario,
-    isVisible: (cell: GridPosition) => boolean) {
+    knowledge: MergeRouteKnowledge) {
     this.map = map;
     this.player = player;
     this.scenario = scenario;
     this.midgame = scenario.difficulty === "challenge" ? scenario.midgame ?? "control" : "control";
-    this.isVisible = isVisible;
+    this.isVisible = knowledge.isVisible;
     this.simulation = new DefenseSimulation(
       map, scenario.entry, scenario.target, (event, metadata) => this.onEvent(event, metadata), scenario.worldSeed !== undefined,
       { towerTuning: scenario.towerTuning },
@@ -124,11 +130,28 @@ export class DefenseDebug {
       this.round = new ExpeditionRound(scenario.roundSpeed, scenario.difficulty);
       this.expedition = new ExpeditionControls(scene, map, scenario.worldSeed, this.round, {
         debug: scenario.debugControls === true,
+        manualMerge: scenario.manualMerge,
         economyExperiment: MIDGAME_EXPERIMENTS[this.midgame].economy,
         spawnEnemy: () => this.spawnPrototypeEnemy(),
         spawnStress: (count) => this.spawnStress(count),
         checkPlacement: (cell, kind) => this.checkPlacement(cell, kind),
       });
+      if (scenario.manualMerge) {
+        this.merge = new MergeControls(map, {
+          playerCell: () => player.cell,
+          isVisible: this.isVisible,
+          isKnown: knowledge.isKnown,
+          roundEnded: () => this.roundEnded,
+          previewRoute: (plan, force) => this.simulation.previewMergeRoute(plan.released, player.cell, knowledge, force),
+          describe: (building) => ({
+            name: building.evolution ? evolutionName(building.evolution) : `${BUILDING_NAMES[building.kind]} Lv.2`,
+            attributes: building.kind === "wall" && !this.isVisible(building.cell)
+              ? `最大耐久 ${building.maxHp} HP · 继承保留墙的受损状态` : this.buildingStatsText(building),
+          }),
+          feedback: (message) => this.expedition?.showFeedback(message),
+          merged: (building, released) => this.onManualMerge(building, released),
+        }, scene);
+      }
       this.economyHistory = new WaveEconomyHistory(this.expedition.economy.totals);
       this.publishWaveMetrics(true);
       return;
@@ -249,9 +272,33 @@ export class DefenseDebug {
     this.expedition?.showBuilding(description);
     this.showBuildingStats(this.expedition ? building : undefined);
     const placement = this.expedition?.previewPlacement(cell);
-    const synthesis = this.expedition?.synthesisPreview;
+    const synthesis = this.merge?.render(cell, this.expedition?.placing === true) ?? this.expedition?.synthesisPreview;
     if (synthesis) this.drawSynthesisPreview(synthesis);
+    this.drawReleasedTiles();
     return placement;
+  }
+
+  private onManualMerge(building: Building, released: readonly GridPosition[]): void {
+    this.mergeRelease = { cells: released, untilMs: this.timeMs + MERGE_RELEASE_MS };
+    const name = building.evolution ? evolutionName(building.evolution) : BUILDING_NAMES[building.kind] + " Lv.2";
+    const direction = building.evolution ? " · " + evolutionDirection(building.evolution) : "";
+    this.expedition?.showFeedback("已合成 " + name + " " + coordinates(building.cell) + direction);
+  }
+
+  private drawReleasedTiles(): void {
+    const highlight = this.mergeRelease;
+    if (!highlight) return;
+    const remaining = highlight.untilMs - this.timeMs;
+    if (remaining <= 0) {
+      this.mergeRelease = undefined;
+      return;
+    }
+    for (const cell of highlight.cells) {
+      if (!this.isVisible(cell) || this.map.getBuilding(cell)) continue;
+      const { x, y } = cellCenter(cell);
+      this.graphics.lineStyle(3, 0x9ff7d4, Math.min(1, remaining / 600))
+        .strokeRect(x - 11, y - 11, 22, 22);
+    }
   }
 
   private drawSynthesisPreview(preview: BuildingSynthesisPreview): void {
@@ -339,13 +386,16 @@ export class DefenseDebug {
 
   private showBuildingStats(building?: Building): void {
     this.buildingStats.hidden = !building;
-    if (!building) return;
+    if (building) write(this.buildingStats, this.buildingStatsText(building));
+  }
+
+  private buildingStatsText(building: Building): string {
     const { kind, cell, level } = building;
     const { buildingBalance } = this.map;
     const biome = this.map.getBiome(cell);
     const prefix = `Lv.${level}`;
     if (kind === "wall") {
-      write(this.buildingStats, `${prefix} · 耐久 ${building.hp}/${building.maxHp} HP`);
+      return `${prefix} · 耐久 ${building.hp}/${building.maxHp} HP`;
     } else if (building.evolution) {
       const { evolution } = building;
       const attack = evolvedTowerAttributes(evolution, biome, this.scenario.towerTuning);
@@ -353,19 +403,20 @@ export class DefenseDebug {
         : `${attack.range} 格`;
       const damage = attack.kind === "piercing" ? `伤害 ${attack.damage} · 最多 ${attack.maxTargets} 个目标`
         : `主伤害 ${attack.damage} · 溅射 ${attack.splashDamage} · 半径 ${attack.radius} 格`;
-      write(this.buildingStats, `${evolutionDirection(evolution)} · ${damage} · 射程 ${range} · 间隔 ${attack.intervalMs} ms`);
+      return `${evolutionDirection(evolution)} · ${damage} · 射程 ${range} · 间隔 ${attack.intervalMs} ms`;
     } else if (kind === "tower") {
       const { damage, range, intervalMs } = towerAttributes(buildingBalance, level, biome);
-      write(this.buildingStats, `${prefix} · 伤害 ${damage} · 射程 ${range} 格 · 间隔 ${intervalMs} ms`);
+      return `${prefix} · 伤害 ${damage} · 射程 ${range} 格 · 间隔 ${intervalMs} ms`;
     } else if (kind === "economy") {
       const { amount, intervalMs } = productionAttributes(buildingBalance, level, biome);
-      write(this.buildingStats, `${prefix} · 每 ${intervalMs} ms 产出 ${amount} 经济`);
-    } else {
-      write(this.buildingStats, prefix);
+      return `${prefix} · 每 ${intervalMs} ms 产出 ${amount} 经济`;
     }
+    return prefix;
   }
 
   reset(): void {
+    this.merge?.clearSelection();
+    this.mergeRelease = undefined;
     this.simulation.reset();
     this.timeMs = 0;
     this.nextMetricsAtMs = 0;
@@ -390,8 +441,9 @@ export class DefenseDebug {
     write(this.status, "等待布防或生成敌人");
   }
 
-  placeSelectedCard(cell: GridPosition): boolean {
-    return this.expedition?.placeSelected(cell) ?? false;
+  handleBoardClick(cell: GridPosition, keepPlacing: boolean): boolean {
+    if (this.expedition?.placeSelected(cell, keepPlacing)) return true;
+    return this.merge?.selectAt(cell) ?? false;
   }
 
   get roundEnded(): boolean { return this.round?.phase === "won" || this.round?.phase === "lost"; }
@@ -429,6 +481,8 @@ export class DefenseDebug {
   }
 
   private stopCombat(): void {
+    this.merge?.clearSelection();
+    this.mergeRelease = undefined;
     this.simulation.clearBattle();
     this.publishWaveMetrics(true);
     this.shots = [];

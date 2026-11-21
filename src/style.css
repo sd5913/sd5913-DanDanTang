@@ -144,6 +144,18 @@ h1 {
 
 .build-preview[data-state="valid"] { color: #a3edcc; }
 .build-preview[data-state="invalid"] { color: #ffb1aa; }
+
+.merge-panel {
+  margin-block: 0.45rem;
+  padding: 0.35rem 0.55rem;
+  border-left: 2px solid #8de6ca;
+  background: #1b2b30;
+}
+.merge-panel p:first-child { color: #b1f4d8; font-weight: 600; }
+.merge-panel p:empty { display: none; }
+#merge-risk[data-state="opened"], #merge-risk[data-state="shorter"] { color: #ffcf90; }
+#merge-risk[data-state="target-changed"], #merge-risk[data-state="unknown"], #merge-hint { color: var(--muted); }
+#merge-confirm { margin-block: 0.25rem; }
 .defense-controls button[data-drawn="true"] { box-shadow: 0 0 0 2px #eac37f; }
 
 .readout dl, .controls { display: grid; gap: 0.375rem; }

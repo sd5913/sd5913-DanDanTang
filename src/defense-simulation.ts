@@ -1,5 +1,7 @@
 import { EnemyNavigation } from "./enemy-navigation.ts";
-import type { NavigationAction } from "./enemy-navigation.ts";
+import type { NavigationAction, NavigationMap } from "./enemy-navigation.ts";
+import { MergeRouteForecaster, pursuitTargetKey } from "./merge-route-preview.ts";
+import type { MergeRouteKnowledge, MergeRouteMetrics, MergeRoutePreview, MergeRouteWorld } from "./merge-route-preview.ts";
 import { TOWER_LEVEL_ONE, evolvedTowerAttributes, towerAttributes } from "./building-balance.ts";
 import type { BurstTowerAttributes, PiercingTowerAttributes, TowerTuning } from "./building-balance.ts";
 import type { Building, BuildingKind } from "./buildings.ts";
@@ -199,6 +201,8 @@ export class DefenseSimulation {
   private towerCoverageRevision = -1;
   private towerCoverage = new WeakMap<GridPosition, PiercingCoverage>();
   private navigation: EnemyNavigation;
+  private mergeRouteForecaster?: MergeRouteForecaster;
+  private mergeRouteEnemyId?: number;
   private counts = newCounters();
   private timeMs = 0;
   private nextEnemyId = 1;
@@ -229,6 +233,34 @@ export class DefenseSimulation {
   get searchCount(): number { return this.navigation.searchCount; }
   get searchTimeMs(): number { return this.navigation.searchTimeMs; }
   get elapsedMs(): number { return this.timeMs; }
+  get mergeRouteMetrics(): MergeRouteMetrics {
+    return this.mergeRouteForecaster?.metrics ?? { computations: 0, cacheHits: 0, searches: 0, elapsedMs: 0, worstMs: 0 };
+  }
+
+  previewMergeRoute(released: readonly GridPosition[], player: GridPosition, knowledge: MergeRouteKnowledge,
+    force = false): MergeRoutePreview {
+    const visible = (enemy: EnemyState): boolean => {
+      const { x, y } = enemyWorldPosition(enemy);
+      return knowledge.isVisible(worldToCell(x, y)) && knowledge.isVisible(enemy.move?.to ?? enemy.cell);
+    };
+    let enemy = this.mergeRouteEnemyId === undefined ? undefined : this.units.get(this.mergeRouteEnemyId);
+    if (!enemy || !visible(enemy)) {
+      enemy = undefined;
+      for (const candidate of this.units.values()) {
+        if (visible(candidate)) {
+          enemy = candidate;
+          break;
+        }
+      }
+    }
+    this.mergeRouteEnemyId = enemy?.id;
+    const subject = enemy ? { id: enemy.id, cell: enemy.move?.to ?? enemy.cell,
+      targetKey: enemy.targetKey, hasTargetedBuilding: enemy.hasTargetedBuilding } : undefined;
+
+    this.mergeRouteForecaster ??= new MergeRouteForecaster(this.map, this.entry, this.buildingTarget.cell,
+      (selection, stance, world) => this.chooseAction(selection, stance, world).target);
+    return this.mergeRouteForecaster.preview(released, player, subject, knowledge, force);
+  }
   get waveMetrics(): readonly WaveCombatSnapshot[] { return this.waveCombat.snapshots(this.timeMs); }
   get towerDiagnostics(): readonly TowerCombatSnapshot[] | undefined { return this.combatDiagnostics?.snapshots(this.timeMs); }
 
@@ -304,6 +336,8 @@ export class DefenseSimulation {
     this.towerReadyAt = new WeakMap();
     this.towerCoverageRevision = -1;
     this.navigation = new EnemyNavigation(this.map);
+    this.mergeRouteForecaster = undefined;
+    this.mergeRouteEnemyId = undefined;
     this.counts = newCounters();
     this.timeMs = 0;
     this.nextSpawnAtMs = 0;
@@ -403,7 +437,7 @@ export class DefenseSimulation {
       }
 
       const { target, action } = this.chooseAction(enemy, player?.cell);
-      const key = target.buildingId ?? `${target.kind}:${target.cell.col},${target.cell.row}`;
+      const key = pursuitTargetKey(target);
       if (enemy.targetKey !== key) {
         enemy.targetKey = key;
         enemy.contacted = false;
@@ -504,59 +538,66 @@ export class DefenseSimulation {
     this.emit(event, { waveId: enemy.waveId, enemyKind: enemy.kind, timeMs: this.timeMs, cell });
   }
 
-  private chooseAction(enemy: Readonly<EnemyState>, player?: GridPosition): { target: Target; action: NavigationAction } {
+  private chooseAction(enemy: Pick<EnemyState, "cell" | "hasTargetedBuilding">, player?: GridPosition,
+    world?: MergeRouteWorld): { target: Target; action: NavigationAction } {
     const from = enemy.cell;
+    const map = world?.map ?? this.map;
+    const navigation = world?.navigation ?? this.navigation;
     if (this.expeditionCombat) {
       let playerAction: NavigationAction | undefined;
-      if (player && this.hasPlayerSight(from, player)) {
-        playerAction = this.actionToward(from, player, false);
+      if (player && this.hasPlayerSight(from, player, map)) {
+        playerAction = this.actionToward(navigation, from, player, false);
         if (playerAction.kind !== "unreachable") return { target: { kind: "player", cell: player }, action: playerAction };
       }
 
-      if (this.buildingRevision !== this.map.revision) {
-        this.attackableBuildings = [...this.map.getBuildings()].filter((building) => building.kind !== "wall");
-        this.buildingRevision = this.map.revision;
-      }
-      const result = this.navigation.nextBuilding(from, this.attackableBuildings);
+      const result = navigation.nextBuilding(from, world?.attackableBuildings ?? this.liveAttackableBuildings());
       if (result) {
         const { building, action } = result;
         return { target: { kind: "building", cell: building.cell, buildingId: building.id }, action };
       }
       // Retarget existing attackers without alerting new spawns to a hidden player.
       if (player && enemy.hasTargetedBuilding) {
-        const action = playerAction ?? this.actionToward(from, player, false);
+        const action = playerAction ?? this.actionToward(navigation, from, player, false);
         if (action.kind !== "unreachable") return { target: { kind: "player", cell: player }, action };
       }
-      return { target: this.buildingTarget, action: this.actionToward(from, this.buildingTarget.cell) };
+      return { target: this.buildingTarget, action: this.actionToward(navigation, from, this.buildingTarget.cell) };
     }
 
-    const target: Target = player && this.seesPlayer(from, player)
+    const target: Target = player && this.seesPlayer(from, player, map)
       ? { kind: "player", cell: player }
       : this.buildingTarget;
-    return { target, action: this.actionToward(from, target.cell) };
+    return { target, action: this.actionToward(navigation, from, target.cell) };
   }
 
-  private actionToward(from: GridPosition, target: GridPosition, allowBreach = true): NavigationAction {
-    return sameCell(from, target) ? { kind: "arrived" } : this.navigation.next(from, target, allowBreach);
+  private liveAttackableBuildings(): readonly Building[] {
+    if (this.buildingRevision !== this.map.revision) {
+      this.attackableBuildings = [...this.map.getBuildings()].filter((building) => building.kind !== "wall");
+      this.buildingRevision = this.map.revision;
+    }
+    return this.attackableBuildings;
   }
 
-  private seesPlayer(from: GridPosition, player: GridPosition): boolean {
+  private actionToward(navigation: EnemyNavigation, from: GridPosition, target: GridPosition, allowBreach = true): NavigationAction {
+    return sameCell(from, target) ? { kind: "arrived" } : navigation.next(from, target, allowBreach);
+  }
+
+  private seesPlayer(from: GridPosition, player: GridPosition, map: NavigationMap): boolean {
     const dc = player.col - from.col;
     const dr = player.row - from.row;
     const distance = Math.abs(dc) + Math.abs(dr);
-    if ((dc !== 0 && dr !== 0) || distance > DEFENSE_CONFIG.playerSight || !this.map.isWalkable(player)) return false;
+    if ((dc !== 0 && dr !== 0) || distance > DEFENSE_CONFIG.playerSight || !map.isWalkable(player)) return false;
     for (let offset = 1; offset < distance; offset += 1) {
-      if (!this.map.isWalkable({ col: from.col + Math.sign(dc) * offset, row: from.row + Math.sign(dr) * offset })) return false;
+      if (!map.isWalkable({ col: from.col + Math.sign(dc) * offset, row: from.row + Math.sign(dr) * offset })) return false;
     }
     return true;
   }
 
-  private hasPlayerSight(from: GridPosition, player: GridPosition): boolean {
+  private hasPlayerSight(from: GridPosition, player: GridPosition, map: NavigationMap = this.map): boolean {
     const dc = player.col - from.col;
     const dr = player.row - from.row;
     const cols = Math.abs(dc);
     const rows = Math.abs(dr);
-    if (cols ** 2 + rows ** 2 > DEFENSE_CONFIG.playerSight ** 2 || !this.map.isWalkable(player)) return false;
+    if (cols ** 2 + rows ** 2 > DEFENSE_CONFIG.playerSight ** 2 || !map.isWalkable(player)) return false;
 
     // Trace cell centers. At an exact corner both touching cells must be clear.
     const stepCol = Math.sign(dc);
@@ -566,8 +607,8 @@ export class DefenseSimulation {
     let crossedRows = 0;
     while (crossedCols < cols || crossedRows < rows) {
       const edge = (2 * crossedCols + 1) * rows - (2 * crossedRows + 1) * cols;
-      if (edge === 0 && (!this.map.isWalkable({ col: col + stepCol, row })
-        || !this.map.isWalkable({ col, row: row + stepRow }))) return false;
+      if (edge === 0 && (!map.isWalkable({ col: col + stepCol, row })
+        || !map.isWalkable({ col, row: row + stepRow }))) return false;
       if (edge <= 0) {
         col += stepCol;
         crossedCols += 1;
@@ -576,7 +617,7 @@ export class DefenseSimulation {
         row += stepRow;
         crossedRows += 1;
       }
-      if (!this.map.isWalkable({ col, row })) return false;
+      if (!map.isWalkable({ col, row })) return false;
     }
     return true;
   }

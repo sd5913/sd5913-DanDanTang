@@ -46,7 +46,127 @@ async function readPathing(page) {
   }));
 }
 
-export async function preparePaidEvolvedTower(page, baseUrl, kind, { playtest = false, checkRepath = false } = {}) {
+async function confirmManualEvolution(page, run, { kind, name, direction, retained, released, target, stance, moved, attack,
+  checkRepath, readyOnly }) {
+  const panel = page.locator('#merge-controls');
+  const confirm = page.locator('#merge-confirm');
+  const readyName = page.locator('#merge-name');
+  const forecast = page.locator('#merge-tiles');
+  const risk = page.locator('#merge-risk');
+  const retainInk = [159, 247, 212];
+  const releaseInk = [255, 216, 151];
+
+  const retainBefore = await tileInk(page, run.game, retained, retainInk, 9);
+  const releaseBefore = await Promise.all(released.map((tile) => tileInk(page, run.game, tile, releaseInk, 22)));
+  await run.place('tower', target);
+  await page.clock.runFor(32);
+  assert.equal((await readCardInventory(page)).tower, 0);
+  await page.clock.runFor(144);
+  assert.equal(await readyName.textContent(), '可合成 · ' + name);
+  assert.equal(await forecast.textContent(), '保留 ' + label(retained) + ' · 释放 ' + released.map(label).join('、'));
+  assert.ok(await panel.isVisible());
+  assert.ok(await confirm.isHidden(), 'Hovering shows the forecast but does not select the group');
+  for (const tile of [retained, ...released]) {
+    await run.game.inspect(tile, '空地');
+    await page.clock.runFor(16);
+    assert.match(await run.building.textContent(), /^防御塔 .*1 HP$/);
+    assert.match(await page.locator('#expedition-building-stats').textContent(), /^Lv\.1/);
+  }
+  assert.ok(await tileInk(page, run.game, retained, retainInk, 9) > retainBefore + 4, 'The preview must highlight the retained tile');
+  for (const [index, tile] of released.entries()) {
+    assert.ok(await tileInk(page, run.game, tile, releaseInk, 22) > releaseBefore[index] + 4,
+      'The preview must highlight the release tile ' + label(tile));
+  }
+
+  const unknown = cell(33, 81);
+  await run.game.aimAt(unknown);
+  await page.clock.runFor(32);
+  assert.equal(await page.locator('#hover-cell').getAttribute('data-visibility'), 'unknown');
+  assert.ok(await panel.isHidden());
+
+  await page.setViewportSize({ width: 1120, height: 760 });
+  const resized = await run.game.settleView();
+  assert.ok(Math.abs(resized.height - moved.height) > TILE_SIZE);
+  await run.game.inspect(target, '空地');
+  await run.clickBoard();
+  assert.equal(await readyName.textContent(), '可合成 · ' + name);
+  assert.equal(await forecast.textContent(), '保留 ' + label(retained) + ' · 释放 ' + released.map(label).join('、'));
+  assert.match(await risk.textContent(), /路线|通路/);
+  const bounds = await panel.boundingBox();
+  assert.ok(bounds && bounds.y >= 0 && bounds.y + bounds.height <= 760, 'The selected merge preview must fit at 1120x760');
+  assert.ok(await confirm.isEnabled());
+  if (readyOnly) return { ...run, retained, released, attack };
+
+  if (kind === 'piercing' && !checkRepath) {
+    await run.returnTo(GENERATED_SPAWN);
+    await page.clock.runFor(48);
+    assert.ok(await panel.isVisible(), 'Selection should persist while approaching or leaving');
+    assert.ok(await confirm.isDisabled());
+    assert.match(await page.locator('#merge-hint').textContent(), /靠近/);
+    await run.returnTo(stance);
+    await page.clock.runFor(48);
+    assert.ok(await confirm.isEnabled());
+  }
+
+  let beforePath;
+  if (checkRepath) {
+    await startFirstWave(page, run.start, { publicBuild: true });
+    await page.clock.runFor(16);
+    beforePath = await readPathing(page);
+    assert.equal(beforePath.active, 1);
+    assert.equal(beforePath.removed, 0);
+    assert.ok(beforePath.searches > 0);
+    await page.clock.runFor(16);
+    assert.deepEqual(await readPathing(page), beforePath, 'The four placed towers are stable before confirmation');
+  }
+
+  const paidBalance = await run.cash();
+  const paidInventory = await readCardInventory(page);
+  await confirm.click();
+  await page.clock.runFor(16);
+  const feedback = page.locator('#expedition-feedback');
+  if ((await feedback.textContent()).includes('预览已更新')) {
+    await confirm.click();
+    await page.clock.runFor(16);
+  }
+  assert.equal(await feedback.textContent(), '已合成 ' + name + ' ' + label(retained) + ' · ' + direction);
+  assert.ok(await panel.isHidden());
+  if (!checkRepath) assert.equal(await run.cash(), paidBalance, 'The merge must not charge currency');
+  assert.deepEqual(await readCardInventory(page), paidInventory, 'The merge must not charge another card');
+
+  let afterPath;
+  if (beforePath) {
+    afterPath = await readPathing(page);
+    for (let elapsed = 0; afterPath.searches <= beforePath.searches && elapsed < 150; elapsed += 16) {
+      await page.clock.runFor(16);
+      afterPath = await readPathing(page);
+    }
+    assert.equal(afterPath.active, beforePath.active);
+    assert.equal(afterPath.removed, beforePath.removed);
+    assert.equal(afterPath.spawned, beforePath.spawned);
+    assert.ok(afterPath.searches > beforePath.searches, 'The same live enemy must invalidate and update its route');
+  }
+
+  await run.game.inspect(retained, '空地');
+  await page.clock.runFor(16);
+  assert.equal(await run.building.textContent(), name + ' ' + label(retained) + ' · 1 HP');
+  const damage = attack.kind === 'piercing' ? '伤害 5 · 最多 4 个目标' : '主伤害 4 · 溅射 2 · 半径 ' + attack.radius + ' 格';
+  assert.equal(await page.locator('#expedition-building-stats').textContent(),
+    direction + ' · ' + damage + ' · 射程 ' + attack.range + ' 格 · 间隔 ' + attack.intervalMs + ' ms');
+  for (const tile of released) {
+    run.occupied.delete(label(tile));
+    await run.game.inspect(tile, '空地');
+    await page.clock.runFor(16);
+    assert.equal(await run.building.textContent(), '—');
+    assert.ok(await tileInk(page, run.game, tile, retainInk, 18) > 4, 'The released tile ' + label(tile) + ' must flash');
+  }
+  await run.returnTo(released[0]);
+  assert.deepEqual(await run.game.position(), released[0], 'A tile must be walkable after confirmation');
+  await run.returnTo(GENERATED_SPAWN);
+  return { ...run, retained, released, attack, searches: afterPath ? [beforePath.searches, afterPath.searches] : undefined };
+}
+
+export async function preparePaidEvolvedTower(page, baseUrl, kind, { playtest = false, checkRepath = false, readyOnly = false } = {}) {
   const { name, direction, targets, builders, evolution } = cases[kind];
   const tuning = playtest ? PLAYTEST_TOWER_TUNING : CONTROL_TOWER_TUNING;
   const attack = evolvedTowerAttributes(evolution, 'ordinary', tuning);
@@ -66,6 +186,9 @@ export async function preparePaidEvolvedTower(page, baseUrl, kind, { playtest = 
   await run.returnTo(builders[3]);
   const moved = await run.game.settleView();
   assert.ok(moved.left > initial.left + TILE_SIZE, 'The camera must pan as the player approaches the fourth tile');
+  if (playtest) return confirmManualEvolution(page, run, {
+    kind, name, direction, retained, released, target, stance: builders[3], moved, attack, checkRepath, readyOnly,
+  });
 
   const preview = page.locator('#build-preview');
   const previewText = `将合成 ${name} · ${direction} · 保留 ${label(retained)} · 释放 ${released.map(label).join('、')}`;
@@ -103,10 +226,9 @@ export async function preparePaidEvolvedTower(page, baseUrl, kind, { playtest = 
 
   let beforePath;
   if (checkRepath) {
-    if (playtest) await startFirstWave(page, run.start, { publicBuild: true });
-    else await page.locator('#expedition-spawn').click();
+    await page.locator('#expedition-spawn').click();
     await run.game.aimAt(target);
-    await page.clock.runFor(playtest ? 16 : 64);
+    await page.clock.runFor(64);
     beforePath = await readPathing(page);
     assert.equal(beforePath.active, 1);
     assert.equal(beforePath.removed, 0);

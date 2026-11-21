@@ -1,7 +1,9 @@
 import { buildingMaxHp } from "./building-balance.ts";
 import type { BuildingBalanceId } from "./building-balance.ts";
 import { BUILDING_SYNTHESIS_CONFIG, BuildingStore } from "./buildings.ts";
-import type { Building, BuildingImpact, BuildingKind, BuildingSynthesisPreview, WallImpact } from "./buildings.ts";
+import type {
+  Building, BuildingImpact, BuildingKind, BuildingSynthesisPreview, BuildingSynthesisResult, ReadyBuildingSynthesis, WallImpact,
+} from "./buildings.ts";
 import type { BiomeId } from "./expedition-biomes.ts";
 import { TERRAIN_HP_BY_LEVEL } from "./mining-config.ts";
 import { TEST_MAP_LAYOUT } from "./test-map.ts";
@@ -212,6 +214,18 @@ export class TerrainMap implements TerrainReader {
   previewBuildingSynthesis(kind: BuildingKind, position: GridPosition): BuildingSynthesisPreview | undefined {
     if (!this.#autoMerge || !this.isWalkable(position)) return undefined;
     return this.#buildings.previewSynthesis(kind, position, buildingMaxHp(kind, this.buildingBalance));
+  }
+
+  previewReadySynthesis(position: GridPosition): ReadyBuildingSynthesis | undefined {
+    return !this.#autoMerge && this.isInside(position) ? this.#buildings.previewReadySynthesis(position) : undefined;
+  }
+
+  executeBuildingSynthesis(expected: ReadyBuildingSynthesis, player: GridPosition): BuildingSynthesisResult {
+    if (this.#autoMerge || !this.isInside(expected.retained)) return { success: false, reason: "invalid" };
+    if (!this.isWalkable(player)) return { success: false, reason: "out-of-range" };
+    const result = this.#buildings.executeReadySynthesis(expected, player);
+    if (result.success) this.#revision += 1;
+    return result;
   }
 
   placeBuilding(kind: BuildingKind, position: GridPosition, hp = buildingMaxHp(kind, this.buildingBalance)): Building | undefined {

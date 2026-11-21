@@ -37,6 +37,7 @@ async function assertFreshPlaytest(page, seed) {
   }
   assert.ok(await page.locator('#new-round').isVisible());
   assert.ok(await page.locator('#retry-round').isVisible());
+  assert.ok(await page.locator('#merge-controls').isHidden());
 }
 
 export async function runPlaytestSmoke(page, baseUrl) {
@@ -153,20 +154,58 @@ export async function runPlaytestCombinedEconomySmoke(page, baseUrl) {
   const ninthReward = reducedReward / reducedKills;
   assert.equal(await combat.getAttribute('data-wave-combat'), null);
   assert.equal(await run.maker.textContent(), '制造卡牌（6 经济）');
-  const card = await run.draw();
-  const reuse = run.released[0];
-  await run.returnTo({ col: reuse.col, row: reuse.row + 1 });
-  await run.place(card, reuse);
-  await run.game.inspect(reuse, '空地');
-  await page.clock.runFor(32);
-  assert.notEqual(await run.building.textContent(), '—');
+  let card;
+  for (let purchase = 0; purchase < 4; purchase += 1) {
+    const drawn = await run.draw();
+    if ((await readCardInventory(page))[drawn] === 2) {
+      card = drawn;
+      break;
+    }
+  }
+  assert.ok(card, 'Four crafts must produce a duplicate among the three existing card types');
+  const released = run.released.slice(0, 2);
+  const stance = { col: released[1].col, row: released[1].row + 1 };
+  await run.returnTo(stance);
+  await run.select(card);
+  const button = page.locator('#card-' + card);
+  await page.keyboard.press('Escape');
+  assert.equal(await button.getAttribute('aria-pressed'), 'false');
+  await run.select(card);
+  await page.keyboard.down('Shift');
+  try {
+    await run.place(card, released[0]);
+    assert.equal(await button.getAttribute('aria-pressed'), 'true', 'Shift keeps the available card selected');
+    await run.place(card, released[1]);
+  } finally {
+    await page.keyboard.up('Shift');
+  }
+  assert.equal(await button.getAttribute('aria-pressed'), 'false', 'Running out of the card exits placement');
+  assert.equal((await readCardInventory(page))[card], 0);
+  for (const reuse of released) {
+    await run.game.inspect(reuse, '空地');
+    await page.clock.runFor(32);
+    assert.notEqual(await run.building.textContent(), '—');
+  }
   return { seed: 515, evolution: 'piercing', intervalMs: run.attack.intervalMs,
-    firstWaveKills: 8, firstWaveBalance: 16, beforeNinth, withNinth, ninthReward, reused: reuse, card };
+    firstWaveKills: 8, firstWaveBalance: 16, beforeNinth, withNinth, ninthReward, reused: released, card, shiftPlacement: true };
 }
 
 export async function runPlaytestLiveRepathSmoke(page, baseUrl) {
   const run = await preparePaidEvolvedTower(page, baseUrl, 'piercing', { playtest: true, checkRepath: true });
   return { seed: 515, intervalMs: run.attack.intervalMs, searches: run.searches, released: run.released };
+}
+
+export async function runPlaytestMergeResetSmoke(page, baseUrl) {
+  await preparePaidEvolvedTower(page, baseUrl, 'piercing', { playtest: true, readyOnly: true });
+  assert.ok(await page.locator('#merge-confirm').isEnabled());
+  await page.clock.resume();
+  await Promise.all([
+    page.waitForURL((url) => url.searchParams.has('seed') && url.searchParams.get('seed') !== '515'),
+    page.locator('#new-round').click(),
+  ]);
+  const newSeed = currentSeed(page);
+  await assertFreshPlaytest(page, newSeed);
+  return { previousSeed: 515, newSeed, selectedMergeCleared: true };
 }
 
 export async function runPlaytestBurstSmoke(page, baseUrl) {

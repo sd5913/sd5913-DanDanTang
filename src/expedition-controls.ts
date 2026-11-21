@@ -68,6 +68,7 @@ const PLACEMENT_FAILURE_LABELS: Record<PlacementFailure | TechnologyBuildFailure
 interface ExpeditionActions {
   readonly debug: boolean;
   readonly economyExperiment?: EconomyExperiment;
+  readonly manualMerge?: boolean;
   spawnEnemy(): void;
   spawnStress(count: number): void;
   checkPlacement(cell: GridPosition, kind: PlacementKind): PlacementFailure | undefined;
@@ -77,6 +78,7 @@ export class ExpeditionControls {
   readonly economy: ExpeditionEconomy;
   private readonly checkPlacement: ExpeditionActions["checkPlacement"];
   private readonly challenge: boolean;
+  private readonly manualMerge: boolean;
   private readonly map: TerrainMap;
   private preview?: {
     readonly revision: number;
@@ -124,6 +126,7 @@ export class ExpeditionControls {
     this.map = map;
     this.economy = new ExpeditionEconomy(map, seed, undefined, round.difficulty, actions.economyExperiment);
     this.challenge = round.difficulty === "challenge";
+    this.manualMerge = actions.manualMerge === true;
     this.checkPlacement = actions.checkPlacement;
     const events = new AbortController();
     const options = { signal: events.signal };
@@ -183,7 +186,8 @@ export class ExpeditionControls {
       button.addEventListener("click", () => {
         this.selected = this.selected === card ? undefined : card;
         write(this.placementCost, "");
-        this.showFeedback(this.selected ? `点击空地放置${BUILDING_NAMES[card]}` : "已取消选择");
+        const quickPlace = this.manualMerge ? " · 按住 Shift 连续放置" : "";
+        this.showFeedback(this.selected ? `点击空地放置${BUILDING_NAMES[card]}${quickPlace}` : "已取消选择");
         this.refresh();
       }, options);
     }
@@ -248,8 +252,9 @@ export class ExpeditionControls {
   }
 
   get synthesisPreview(): BuildingSynthesisPreview | undefined { return this.activeSynthesis; }
+  get placing(): boolean { return this.selected !== undefined; }
 
-  placeSelected(cell: GridPosition): boolean {
+  placeSelected(cell: GridPosition, keepPlacing = false): boolean {
     const selected = this.selected;
     if (!selected) return false;
     const reason = this.placementRejection(cell, selected);
@@ -278,7 +283,7 @@ export class ExpeditionControls {
     }
     const after = this.economy.cards[selected];
     write(this.placementCost, `消耗：${name}卡 ×${before - after} · 库存：${before} → ${after}`);
-    this.selected = undefined;
+    this.selected = this.manualMerge && keepPlacing && after > 0 ? selected : undefined;
     this.refresh();
     return true;
   }

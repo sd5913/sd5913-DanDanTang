@@ -43,10 +43,11 @@ try {
     const mode = development ? 'dev regression' : 'compiled regression';
     if (playtest) {
       const { runPlaytestSmoke, runPlaytestCombinedEconomySmoke, runPlaytestBurstSmoke,
-        runPlaytestLiveRepathSmoke, runPlaytestVictorySmoke, runPlaytestLossSmoke } = await import('./browser-playtest.mjs');
+        runPlaytestLiveRepathSmoke, runPlaytestMergeResetSmoke, runPlaytestVictorySmoke, runPlaytestLossSmoke } = await import('./browser-playtest.mjs');
       for (const [name, run] of [
         ['unified playtest', runPlaytestSmoke], ['paid piercing, economy and tile reuse', runPlaytestCombinedEconomySmoke],
         ['paid burst', runPlaytestBurstSmoke], ['live repath', runPlaytestLiveRepathSmoke],
+        ['new round clears selected merge', runPlaytestMergeResetSmoke],
         ['normal victory', runPlaytestVictorySmoke], ['normal loss', runPlaytestLossSmoke],
       ]) {
         const result = await withSmokePage(browser, { width: 1280, height: 900 }, (page) => run(page, url));
